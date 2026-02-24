@@ -40,9 +40,10 @@ st.markdown(
 )
 
 # =========================
-# API Key
+# OpenAI API Key
 # =========================
-# Use Streamlit secrets for cloud deployment
+# Streamlit Cloud: store your API key in Secrets
+# Example: OPENAI_API_KEY = "sk-XXXXXXXXXXXXXXXXXXXX"
 openai.api_key = st.secrets["OPENAI_API_KEY"]
 
 # =========================
@@ -76,28 +77,25 @@ if "history" not in st.session_state:
 user_input = st.text_input("Enter your question or requirement:")
 
 if st.button("Send") and user_input.strip():
-    # Save user message
+    # Save user input
     st.session_state.history.append({"role": "user", "content": user_input})
 
     try:
-        # Call OpenAI Chat Completion API
+        # Call OpenAI API
         response = openai.chat.completions.create(
             model="gpt-4o-mini",
             messages=st.session_state.history,
             max_tokens=300,
-            temperature=0.7
+            temperature=0.7,
         )
 
-        # Get assistant message
         assistant_msg = response.choices[0].message.content
 
         # Save assistant message
         st.session_state.history.append({"role": "assistant", "content": assistant_msg})
 
-    except openai.error.OpenAIError as e:
-        st.error(f"⚠️ OpenAI API error: {e}")
     except Exception as e:
-        st.error(f"⚠️ Unexpected error: {e}")
+        st.error(f"⚠️ OpenAI API error: {e}")
 
 # =========================
 # Display Conversation
