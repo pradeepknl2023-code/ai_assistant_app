@@ -5,13 +5,13 @@ import openai
 # Page Config & Theme
 # =========================
 st.set_page_config(
-    page_title="AI PO Assistant",
+    page_title="AI‑PO‑Assistantce",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Colors & CSS
+# Custom CSS for chat bubbles
 st.markdown(
     """
     <style>
@@ -42,29 +42,30 @@ st.markdown(
 # =========================
 # API Key
 # =========================
+# Use Streamlit secrets for cloud deployment
 openai.api_key = st.secrets["OPENAI_API_KEY"]
 
 # =========================
 # Sidebar
 # =========================
-st.sidebar.title("🛠 AI PO Assistant")
+st.sidebar.title("🛠 AI‑PO‑Assistantce")
 st.sidebar.markdown(
     """
 **Instructions:**  
-- Ask anything related to your project or business.  
-- The AI will provide clean, structured responses.  
-- Scroll down for conversation history.
+- Ask anything about your project, user stories, or tasks.  
+- The AI provides clean, structured answers.  
+- Scroll down to see full conversation history.
 """
 )
 
 # =========================
-# Title
+# App Title
 # =========================
-st.title("🤖 AI PO Assistant")
-st.subheader("Your Clean, Cloud-Based AI Project Assistant")
+st.title("🤖 AI‑PO‑Assistantce")
+st.subheader("Your Cloud-Based AI Product Owner Assistant")
 
 # =========================
-# Conversation State
+# Conversation History
 # =========================
 if "history" not in st.session_state:
     st.session_state.history = []
@@ -74,22 +75,29 @@ if "history" not in st.session_state:
 # =========================
 user_input = st.text_input("Enter your question or requirement:")
 
-if st.button("Send"):
-    if user_input.strip():
-        # Save user input
-        st.session_state.history.append({"role": "user", "content": user_input})
+if st.button("Send") and user_input.strip():
+    # Save user message
+    st.session_state.history.append({"role": "user", "content": user_input})
 
-        # Call OpenAI
+    try:
+        # Call OpenAI Chat Completion API
         response = openai.chat.completions.create(
             model="gpt-4o-mini",
             messages=st.session_state.history,
             max_tokens=300,
-            temperature=0.7,
+            temperature=0.7
         )
 
         # Get assistant message
         assistant_msg = response.choices[0].message.content
+
+        # Save assistant message
         st.session_state.history.append({"role": "assistant", "content": assistant_msg})
+
+    except openai.error.OpenAIError as e:
+        st.error(f"⚠️ OpenAI API error: {e}")
+    except Exception as e:
+        st.error(f"⚠️ Unexpected error: {e}")
 
 # =========================
 # Display Conversation
