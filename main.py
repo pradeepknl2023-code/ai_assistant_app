@@ -80,7 +80,7 @@ if st.button("Send"):
         st.session_state.history.append({"role": "user", "content": user_input})
 
         # Call OpenAI
-        response = openai.ChatCompletion.create(
+        response = openai.chat.completions.create(
             model="gpt-4o-mini",
             messages=st.session_state.history,
             max_tokens=300,
@@ -88,7 +88,7 @@ if st.button("Send"):
         )
 
         # Get assistant message
-        assistant_msg = response["choices"][0]["message"]["content"]
+        assistant_msg = response.choices[0].message.content
         st.session_state.history.append({"role": "assistant", "content": assistant_msg})
 
 # =========================
