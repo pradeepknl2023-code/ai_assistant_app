@@ -358,35 +358,17 @@ def get_jira_issue_type(type_name: str) -> str:
     return mapping.get(type_name.lower(), "Story")
 
 
-def push_story_to_jira(jira_url: str, email: str, api_token: str, project_key: str, story: dict, epic_link: str = None) -> dict:
-    """Push a single story to Jira Cloud and return result."""
-    jira_url = jira_url.rstrip("/")
-    auth = b64encode(f"{email}:{api_token}".encode()).decode()
-    headers = {
-        "Authorization": f"Basic {auth}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-
-    # Build description in Atlassian Document Format (ADF)
+def _build_adf_description(story: dict) -> dict:
+    """Build Atlassian Document Format description from story fields."""
     ac_list = story.get("acceptance_criteria", [])
     subtasks_list = story.get("subtasks", [])
 
-    ac_content = []
-    for ac in ac_list:
-        ac_content.append({
-            "type": "listItem",
-            "content": [{"type": "paragraph", "content": [{"type": "text", "text": ac}]}]
-        })
+    ac_content = [
+        {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": ac}]}]}
+        for ac in ac_list
+    ] or [{"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "N/A"}]}]}]
 
-    sub_content = []
-    for sub in subtasks_list:
-        sub_content.append({
-            "type": "listItem",
-            "content": [{"type": "paragraph", "content": [{"type": "text", "text": f"{sub.get('title','')} (~{sub.get('hours',0)}h)"}]}]
-        })
-
-    description_doc = {
+    doc = {
         "type": "doc",
         "version": 1,
         "content": [
@@ -399,75 +381,141 @@ def push_story_to_jira(jira_url: str, email: str, api_token: str, project_key: s
                 "attrs": {"level": 3},
                 "content": [{"type": "text", "text": "Acceptance Criteria"}]
             },
-            {
-                "type": "bulletList",
-                "content": ac_content if ac_content else [{"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "N/A"}]}]}]
-            },
+            {"type": "bulletList", "content": ac_content},
         ]
     }
 
-    if sub_content:
-        description_doc["content"].append({
-            "type": "heading",
-            "attrs": {"level": 3},
+    if subtasks_list:
+        sub_content = [
+            {"type": "listItem", "content": [{"type": "paragraph", "content": [
+                {"type": "text", "text": f"{s.get('title','')} (~{s.get('hours',0)}h)"}
+            ]}]}
+            for s in subtasks_list
+        ]
+        doc["content"].append({
+            "type": "heading", "attrs": {"level": 3},
             "content": [{"type": "text", "text": "Subtasks / Tasks"}]
         })
-        description_doc["content"].append({
-            "type": "bulletList",
-            "content": sub_content
+        doc["content"].append({"type": "bulletList", "content": sub_content})
+
+    # Append story points + sprint as a note at the bottom of description
+    meta_lines = []
+    if story.get("story_points"):
+        meta_lines.append(f"Story Points: {story['story_points']}")
+    if story.get("sprint"):
+        meta_lines.append(f"Sprint: {story['sprint']}")
+    if story.get("priority"):
+        meta_lines.append(f"Priority: {story['priority']}")
+    if meta_lines:
+        doc["content"].append({
+            "type": "paragraph",
+            "content": [{"type": "text", "text": " | ".join(meta_lines),
+                         "marks": [{"type": "strong"}]}]
         })
 
-    payload = {
-        "fields": {
-            "project": {"key": project_key},
-            "summary": story.get("title", "Untitled Story"),
-            "description": description_doc,
-            "issuetype": {"name": get_jira_issue_type(story.get("type", "Feature"))},
-            "priority": {"name": get_jira_priority_id(story.get("priority", "Medium"))},
-        }
+    return doc
+
+
+def _is_field_error(err_data: dict, field_name: str) -> bool:
+    """Check if the error response is about a specific field."""
+    errors = err_data.get("errors", {})
+    messages = " ".join(err_data.get("errorMessages", []))
+    field_errors = " ".join(str(v) for v in errors.values())
+    combined = (messages + field_errors + " ".join(errors.keys())).lower()
+    return field_name.lower() in combined
+
+
+def push_story_to_jira(jira_url: str, email: str, api_token: str, project_key: str, story: dict, epic_link: str = None) -> dict:
+    """Push a single story to Jira Cloud. Gracefully retries without optional fields if screen rejects them."""
+    jira_url = jira_url.rstrip("/")
+    auth = b64encode(f"{email}:{api_token}".encode()).decode()
+    headers = {
+        "Authorization": f"Basic {auth}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
     }
 
-    # Add story points if supported
+    description_doc = _build_adf_description(story)
+
+    # Safe label cleaner — Jira labels must not contain spaces
+    def safe_label(s: str) -> str:
+        return re.sub(r"[^a-zA-Z0-9_\-]", "-", s.strip())[:64]
+
+    base_fields = {
+        "project": {"key": project_key},
+        "summary": story.get("title", "Untitled Story"),
+        "description": description_doc,
+        "issuetype": {"name": get_jira_issue_type(story.get("type", "Feature"))},
+        "priority": {"name": get_jira_priority_id(story.get("priority", "Medium"))},
+        "labels": [
+            safe_label(story.get("sprint", "Sprint-1")),
+            "AI-Generated",
+            safe_label(story.get("type", "Feature")),
+        ],
+    }
+
+    # Story points: Jira Cloud standard custom field is customfield_10016.
+    # We attempt with it first; if the screen rejects it we retry without it
+    # and report points were skipped (they're still in the description).
     story_points = story.get("story_points")
-    if story_points:
-        payload["fields"]["story_points"] = story_points
+    sp_field = "customfield_10016"   # Standard "Story Points" field in Jira Cloud
 
-    # Add labels
-    payload["fields"]["labels"] = [
-        story.get("sprint", "Sprint-1").replace(" ", "-"),
-        "AI-Generated",
-        story.get("type", "Feature").replace(" ", "-"),
-    ]
-
-    try:
-        resp = requests.post(
+    def _post(fields: dict) -> requests.Response:
+        return requests.post(
             f"{jira_url}/rest/api/3/issue",
             headers=headers,
-            json=payload,
-            timeout=15
+            json={"fields": fields},
+            timeout=15,
         )
+
+    try:
+        # Attempt 1: with story points
+        fields_with_sp = {**base_fields}
+        if story_points:
+            fields_with_sp[sp_field] = float(story_points)
+
+        resp = _post(fields_with_sp)
+
+        # If Jira rejects because story_points / customfield_10016 is not on screen → retry without it
+        if resp.status_code == 400 and story_points:
+            err_data = resp.json() if resp.content else {}
+            if _is_field_error(err_data, sp_field) or _is_field_error(err_data, "story_point"):
+                # Retry without the points field — points are still in description
+                resp = _post(base_fields)
+                sp_skipped = True
+            else:
+                sp_skipped = False
+        else:
+            sp_skipped = False
+
         if resp.status_code in (200, 201):
             data = resp.json()
+            note = " (story points saved in description — field not on screen)" if sp_skipped else ""
             return {
                 "success": True,
                 "issue_key": data.get("key", "???"),
-                "issue_url": f"{jira_url}/browse/{data.get('key','')}",
+                "issue_url": f"{jira_url}/browse/{data.get('key', '')}",
                 "title": story.get("title", ""),
                 "story_id": story.get("id", ""),
+                "note": note,
             }
         else:
             err_data = resp.json() if resp.content else {}
-            err_msg = err_data.get("errorMessages", []) or list(err_data.get("errors", {}).values())
+            # Collect all error messages from Jira's response structure
+            err_msgs = err_data.get("errorMessages", [])
+            field_errs = [f"{k}: {v}" for k, v in err_data.get("errors", {}).items()]
+            all_errs = err_msgs + field_errs
             return {
                 "success": False,
                 "title": story.get("title", ""),
                 "story_id": story.get("id", ""),
-                "error": f"HTTP {resp.status_code}: {', '.join(err_msg) if err_msg else resp.text[:200]}"
+                "error": f"HTTP {resp.status_code}: {' | '.join(all_errs) if all_errs else resp.text[:300]}",
             }
+
     except requests.exceptions.ConnectionError:
         return {"success": False, "title": story.get("title",""), "story_id": story.get("id",""), "error": "Cannot connect to Jira. Check URL."}
     except requests.exceptions.Timeout:
-        return {"success": False, "title": story.get("title",""), "story_id": story.get("id",""), "error": "Request timed out."}
+        return {"success": False, "title": story.get("title",""), "story_id": story.get("id",""), "error": "Request timed out after 15s."}
     except Exception as e:
         return {"success": False, "title": story.get("title",""), "story_id": story.get("id",""), "error": str(e)}
 
@@ -928,15 +976,19 @@ with tab2:
             fail_items = [r for r in st.session_state.push_results if not r["success"]]
 
             if success_items:
+                sp_skipped_any = any(r.get("note") for r in success_items)
                 success_html = '<div class="push-success"><div style="font-size:14px;font-weight:700;color:#1B5E20;margin-bottom:8px;">✅ Successfully Created in Jira</div>'
                 for r in success_items:
+                    note_badge = f'<span style="font-size:10px;color:#E65100;margin-left:8px;">⚠️ pts in description</span>' if r.get("note") else ""
                     success_html += f'''<div class="push-result-item" style="color:#2E7D32;padding:5px 0;border-bottom:1px solid #C8E6C9;">
                         <strong>{r.get("story_id","")}</strong> · {r.get("title","")[:60]}
                         &nbsp;→&nbsp; <a href="{r.get("issue_url","")}" target="_blank" style="color:#1565C0;font-weight:700;">{r.get("issue_key","")}</a>
-                        <span style="font-size:10px;color:#888;margin-left:8px;">{r.get("issue_url","")}</span>
+                        <span style="font-size:10px;color:#888;margin-left:8px;">{r.get("issue_url","")}</span>{note_badge}
                     </div>'''
                 success_html += '</div>'
                 st.markdown(success_html, unsafe_allow_html=True)
+                if sp_skipped_any:
+                    st.info("ℹ️ **Story Points** field (`customfield_10016`) is not on your Jira screen — points saved in issue description instead. To fix: *Jira Settings → Issues → Screens → add Story Points to your project screen.*")
 
             if fail_items:
                 fail_html = '<div class="push-error"><div style="font-size:14px;font-weight:700;color:#C62828;margin-bottom:8px;">❌ Failed to Push</div>'
