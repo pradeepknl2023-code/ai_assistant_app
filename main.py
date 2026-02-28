@@ -21,7 +21,7 @@ genai.configure(api_key=GEMINI_API_KEY)
 # MODEL - Fixed model name
 # -------------------------
 try:
-    model = genai.GenerativeModel(model_name="gemini-1.5-flash")
+    model = genai.GenerativeModel(model_name="gemini-2.0-flash")
 except Exception as e:
     st.error(f"❌ Failed to load model: {str(e)}")
     st.stop()
