@@ -24,7 +24,7 @@ genai.configure(api_key=GEMINI_API_KEY)
 # MODEL (FREE TIER)
 # -------------------------
 
-model = genai.GenerativeModel("gemini-1.5-flash-latest")
+model = genai.GenerativeModel(model_name="models/gemini-1.5-flash")
 # -------------------------
 # USER INPUT
 # -------------------------
