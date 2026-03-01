@@ -1,30 +1,34 @@
 """
-ai_router.py  ·  Gemini-Direct Router  ·  v4.0  (NO LITELLM — REST API ONLY)
+ai_router.py  ·  Gemini-Direct Router  ·  v4.1  (NO LITELLM — REST API ONLY)
 =============================================================================
-PROBLEM WITH v3.x:
-  litellm is an extra dependency that:
-    • Adds its own error classification/wrapping that hides the real Gemini error
-    • Has its own rate-limit logic that conflicts with ours
-    • Changes error message formats between versions (breaks our classifiers)
-    • Is overkill when we only need ONE provider (Gemini)
+FIXES IN v4.1 vs v4.0:
+  ✅ FIXED: gemini-1.5-flash → gemini-2.0-flash-lite (1.5-flash removed from v1beta API)
+  ✅ FIXED: "gone" branch now explicitly updates _LAST_ERROR (was silently keeping the
+             previous model's 429 message → UI falsely showed "rate-limited" for 404 errors)
+  ✅ FIXED: show_ai_error() in app.py gets a clean, accurate error string for all branches
+  ✅ FIXED: Added "model_not_found" error class for clear 404 UX
+  ✅ IMPROVED: model_gone auto-resets after 10 min (transient API changes shouldn't be permanent)
+  ✅ RETAINED: All v4.0 direct REST API logic, no litellm needed
 
-v4.0 SOLUTION — Call Gemini REST API directly via requests:
-  ✅ No litellm needed (still backward-compatible if installed)
-  ✅ Real HTTP status codes — 200/429/401/403/400/500/503
-  ✅ Real Gemini error messages — no wrapping/mangling
-  ✅ Faster: one less layer of abstraction
-  ✅ All v3.1 classifier fixes retained
-  ✅ RATE_LIMIT_SENTINEL only returned when BOTH models truly 429/exhausted
+ROOT CAUSES FIXED:
+  BUG 1 (PRIMARY)  — gemini-1.5-flash was removed from v1beta generateContent endpoint.
+                      Every call returned HTTP 404. Fixed by switching to gemini-2.0-flash-lite.
+  BUG 2 (SECONDARY) — When model 1 returns 429 and model 2 returns 404, the "gone" branch
+                       did NOT update _LAST_ERROR, so the 429 string persisted.
+                       The final wrap "All Gemini models failed. Last error: <429 text>" still
+                       contained "429" / "rate", triggering the wrong show_ai_error() branch.
+                       Fixed by explicitly setting _LAST_ERROR in every error branch.
 
-PROVIDER PRIORITY:
-  Tier 1 — gemini-2.0-flash   (PRIMARY,  FREE, 1M TPM, 1500 RPD)
-  Tier 2 — gemini-1.5-flash   (FALLBACK, FREE, 1M TPM, 1500 RPD)
+PROVIDER PRIORITY (v4.1):
+  Tier 1 — gemini-2.0-flash       (PRIMARY,  FREE, 1M TPM, 1500 RPD)
+  Tier 2 — gemini-2.0-flash-lite  (FALLBACK, FREE, 1.5M TPM, different quota pool)
 
-USAGE (drop-in replacement for v3.x):
+USAGE (drop-in replacement for v4.0 / v3.x):
   from ai_router import (
       call_ai_compat as call_ai,
       get_router_status, get_active_provider, get_active_model,
       get_next_provider, reset_cooldowns, _get_key, RATE_LIMIT_SENTINEL,
+      get_last_error,
   )
 """
 
@@ -48,8 +52,12 @@ _LAST_USED_PROVIDER = "None yet"
 _LAST_USED_MODEL    = "—"
 _LAST_ERROR         = ""
 
-# Gemini REST base URL
+# Gemini REST base URL  (v1beta supports all current Gemini 2.x / 1.5 pinned models)
 _GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+
+# How long a "model_gone" mark persists before auto-retry (seconds).
+# 404s can be transient API hiccups; 10 min is conservative but not permanent.
+_MODEL_GONE_TTL = 600
 
 
 # ─────────────────────────────────────────────────────────────
@@ -81,8 +89,8 @@ def get_last_error() -> str:
 # ─────────────────────────────────────────────────────────────
 @dataclass
 class ModelConfig:
-    model_id    : str          # Gemini model ID for REST API
-    display     : str          # Human-readable name
+    model_id    : str
+    display     : str
     env_key     : str
     tpm         : int
     rpd         : int
@@ -94,6 +102,7 @@ class ModelConfig:
 
 ALL_MODELS: list[ModelConfig] = [
     ModelConfig(
+        # PRIMARY — highest quota, fastest, best quality in free tier
         model_id    = "gemini-2.0-flash",
         display     = "gemini/gemini-2.0-flash",
         env_key     = "GEMINI_API_KEY",
@@ -104,14 +113,16 @@ ALL_MODELS: list[ModelConfig] = [
         provider    = "Google Gemini 2.0 Flash",
     ),
     ModelConfig(
-        model_id    = "gemini-1.5-flash",
-        display     = "gemini/gemini-1.5-flash",
+        # FALLBACK — different model family = truly independent quota pool
+        # gemini-1.5-flash was removed from v1beta in early 2025; use 2.0-flash-lite instead.
+        model_id    = "gemini-2.0-flash-lite",
+        display     = "gemini/gemini-2.0-flash-lite",
         env_key     = "GEMINI_API_KEY",
-        tpm         = 1_000_000,
+        tpm         = 1_500_000,
         rpd         = 1500,
         quality     = 4,
         cost_per_1k = 0.0,
-        provider    = "Google Gemini 1.5 Flash",
+        provider    = "Google Gemini 2.0 Flash Lite",
     ),
 ]
 
@@ -126,6 +137,7 @@ class _ModelStatus:
     rate_limited_until : float = 0.0
     auth_failed        : bool  = False
     model_gone         : bool  = False
+    model_gone_since   : float = 0.0   # ← NEW: for TTL auto-recovery
     total_calls        : int   = 0
     total_tokens       : int   = 0
     last_used_ts       : float = 0.0
@@ -142,6 +154,7 @@ def _st(model_id: str) -> _ModelStatus:
 
 
 def reset_cooldowns() -> int:
+    """Reset all cooldowns and error flags. Returns count of providers recovered."""
     cleared = 0
     for model_id, s in _status_registry.items():
         changed = False
@@ -150,7 +163,8 @@ def reset_cooldowns() -> int:
             s.rate_limit_count   = 0
             changed = True
         if s.model_gone:
-            s.model_gone = False
+            s.model_gone       = False
+            s.model_gone_since = 0.0
             changed = True
         if s.auth_failed:
             s.auth_failed = False
@@ -166,8 +180,16 @@ def reset_cooldowns() -> int:
 # ─────────────────────────────────────────────────────────────
 def _is_available(cfg: ModelConfig) -> bool:
     s = _st(cfg.model_id)
-    if s.auth_failed or s.model_gone:
+    if s.auth_failed:
         return False
+    # Auto-recover from model_gone after TTL (transient API 404s)
+    if s.model_gone:
+        if time.time() - s.model_gone_since > _MODEL_GONE_TTL:
+            logger.info(f"[ROUTER] {cfg.model_id} model_gone TTL expired — auto-recovering")
+            s.model_gone       = False
+            s.model_gone_since = 0.0
+        else:
+            return False
     if time.time() < s.rate_limited_until:
         return False
     if not _get_key(cfg.env_key):
@@ -181,6 +203,13 @@ def _mark_rate_limit(model_id: str):
     backoff              = min(30 * s.rate_limit_count, 90)
     s.rate_limited_until = time.time() + backoff
     logger.warning(f"[ROUTER] {model_id} rate-limit cooldown={backoff}s (hit #{s.rate_limit_count})")
+
+
+def _mark_model_gone(model_id: str):
+    s = _st(model_id)
+    s.model_gone       = True
+    s.model_gone_since = time.time()
+    logger.warning(f"[ROUTER] {model_id} marked model_gone (TTL={_MODEL_GONE_TTL}s)")
 
 
 def _mark_success(model_id: str, tokens: int = 0, provider: str = "", display_model: str = ""):
@@ -204,10 +233,9 @@ def _mark_success(model_id: str, tokens: int = 0, provider: str = "", display_mo
 def _to_gemini_payload(messages: list[dict], temperature: float, max_tokens: int) -> dict:
     """
     Convert OpenAI-style messages to Gemini REST API format.
-    Handles: system, user, assistant roles.
-    System message is prepended as a user turn (Gemini doesn't have system role in REST v1beta).
+    System message is merged into the first user turn (Gemini v1beta has no system role).
     """
-    contents = []
+    contents    = []
     system_text = ""
 
     for msg in messages:
@@ -220,34 +248,32 @@ def _to_gemini_payload(messages: list[dict], temperature: float, max_tokens: int
 
         gemini_role = "user" if role == "user" else "model"
         contents.append({
-            "role": gemini_role,
-            "parts": [{"text": content}]
+            "role"  : gemini_role,
+            "parts" : [{"text": content}],
         })
 
-    # Prepend system prompt as first user message if present
+    # Inject system prompt into first user message
     if system_text and contents:
-        # Inject system text into the first user message
         first = contents[0]
         if first["role"] == "user":
             first["parts"][0]["text"] = system_text + "\n\n" + first["parts"][0]["text"]
     elif system_text:
         contents.insert(0, {"role": "user", "parts": [{"text": system_text}]})
 
-    payload = {
+    return {
         "contents": contents,
         "generationConfig": {
-            "temperature": temperature,
+            "temperature"    : temperature,
             "maxOutputTokens": max_tokens,
-            "topP": 0.95,
+            "topP"           : 0.95,
         },
         "safetySettings": [
             {"category": "HARM_CATEGORY_HARASSMENT",        "threshold": "BLOCK_ONLY_HIGH"},
             {"category": "HARM_CATEGORY_HATE_SPEECH",       "threshold": "BLOCK_ONLY_HIGH"},
             {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_ONLY_HIGH"},
             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
-        ]
+        ],
     }
-    return payload
 
 
 # ─────────────────────────────────────────────────────────────
@@ -263,13 +289,7 @@ def _call_gemini_rest(
     """
     Call Gemini REST API directly.
     Returns: (success: bool, content_or_error: str, tokens_used: int)
-
-    HTTP status codes handled:
-      200 → success
-      400 → bad request (bad model, bad param)
-      401/403 → auth error
-      429 → rate limit
-      500/503 → transient server error
+    Error strings always start with HTTP_<code>: for reliable classifier matching.
     """
     import requests as req
 
@@ -280,73 +300,101 @@ def _call_gemini_rest(
     try:
         resp = req.post(url, json=payload, headers=headers, timeout=60)
     except req.exceptions.ConnectionError as e:
-        return False, f"CONNECTION_ERROR: {str(e)[:200]}", 0
+        return False, f"HTTP_CONNECTION_ERROR: {str(e)[:200]}", 0
     except req.exceptions.Timeout:
-        return False, "TIMEOUT: Request timed out after 60s", 0
+        return False, "HTTP_TIMEOUT: Request timed out after 60s", 0
     except Exception as e:
-        return False, f"REQUEST_EXCEPTION: {type(e).__name__}: {str(e)[:200]}", 0
+        return False, f"HTTP_REQUEST_EXCEPTION: {type(e).__name__}: {str(e)[:200]}", 0
 
     status = resp.status_code
 
     if status == 200:
         try:
-            data       = resp.json()
-            candidate  = data["candidates"][0]
-            text       = candidate["content"]["parts"][0]["text"]
-            usage      = data.get("usageMetadata", {})
-            tokens     = usage.get("totalTokenCount", 0)
+            data      = resp.json()
+            candidate = data["candidates"][0]
+            # Check for safety block inside a 200 response
+            finish_reason = candidate.get("finishReason", "")
+            if finish_reason == "SAFETY":
+                return False, "HTTP_200_SAFETY_BLOCK: Content blocked by Gemini safety filters", 0
+            text   = candidate["content"]["parts"][0]["text"]
+            usage  = data.get("usageMetadata", {})
+            tokens = usage.get("totalTokenCount", 0)
             return True, text, tokens
-        except (KeyError, IndexError, json.JSONDecodeError) as e:
-            # Check for safety block
-            try:
-                finish_reason = resp.json()["candidates"][0].get("finishReason", "")
-                if finish_reason == "SAFETY":
-                    return False, "SAFETY_BLOCK: Content was blocked by Gemini safety filters", 0
-            except Exception:
-                pass
-            return False, f"PARSE_ERROR: Could not parse Gemini response — {e}", 0
+        except (KeyError, IndexError) as e:
+            return False, f"HTTP_200_PARSE_ERROR: Could not parse Gemini response — {e}", 0
 
-    # Error responses
+    # ── Error responses ──────────────────────────────────────
     try:
-        err_data = resp.json()
-        err_msg  = err_data.get("error", {}).get("message", resp.text[:300])
+        err_body = resp.json()
+        err_msg  = err_body.get("error", {}).get("message", resp.text[:400])
     except Exception:
-        err_msg = resp.text[:300]
+        err_msg = resp.text[:400]
 
+    # Always prefix with HTTP_<status>: so _classify_error works reliably
     return False, f"HTTP_{status}: {err_msg}", 0
 
 
 # ─────────────────────────────────────────────────────────────
-# ERROR CLASSIFIERS — work on the error string from _call_gemini_rest
+# ERROR CLASSIFIERS
 # ─────────────────────────────────────────────────────────────
 def _classify_error(err: str) -> str:
     """
-    Returns one of: 'rate_limit', 'auth', 'gone', 'transient', 'bad_request', 'unknown'
+    Classify a REST error string into a routing decision.
+    Returns one of: 'rate_limit' | 'auth' | 'gone' | 'transient' | 'bad_request' | 'safety' | 'unknown'
+
+    IMPORTANT: err strings always start with HTTP_<code>: (from _call_gemini_rest).
+    Match on the HTTP code prefix FIRST to avoid substring false-positives.
+    e.g. "HTTP_404: ... is not found" must NOT match "rate" or "429".
     """
     e = err.lower()
 
-    if "http_429" in e or "rate limit" in e or "quota" in e or "resource_exhausted" in e or "too many requests" in e:
-        return "rate_limit"
-
-    if any(x in e for x in ["http_401", "http_403", "invalid api key", "api key not valid",
-                             "api_key_invalid", "key not valid", "authentication", "unauthorized",
-                             "permission_denied"]):
+    # ── Auth / permission (401, 403) ──────────────────────────
+    if any(x in e for x in [
+        "http_401", "http_403",
+        "invalid api key", "api key not valid", "api_key_invalid",
+        "key not valid", "authentication", "unauthorized", "permission_denied",
+    ]):
         return "auth"
 
-    if any(x in e for x in ["http_404", "not found", "notfound", "does not exist",
-                             "decommissioned", "no longer supported", "unsupported model"]):
+    # ── Rate limit / quota (429) ──────────────────────────────
+    if any(x in e for x in [
+        "http_429",
+        "resource_exhausted", "too many requests",
+    ]):
+        return "rate_limit"
+    # Check "rate limit" and "quota" only when NOT a 404 (avoid false-matches on model names)
+    if "http_404" not in e and "http_4" not in e[:10]:
+        if "rate limit" in e or "quota" in e:
+            return "rate_limit"
+
+    # ── Model not found / deprecated (404, unsupported) ──────
+    if any(x in e for x in [
+        "http_404",
+        "is not found for api version",
+        "not supported for generatecontent",
+        "decommissioned", "no longer supported", "unsupported model",
+        "does not exist",
+    ]):
         return "gone"
 
-    if any(x in e for x in ["http_400", "bad request", "badrequest", "invalid_request",
-                             "invalid argument", "parse_error"]):
+    # ── Bad request (400) ─────────────────────────────────────
+    if any(x in e for x in [
+        "http_400", "bad request", "badrequest",
+        "invalid_request", "invalid argument",
+        "http_200_parse_error",
+    ]):
         return "bad_request"
 
-    if any(x in e for x in ["http_500", "http_502", "http_503", "http_504",
-                             "connection_error", "timeout", "timed out", "service unavailable",
-                             "internal server error", "transient"]):
+    # ── Transient server errors (5xx, network) ────────────────
+    if any(x in e for x in [
+        "http_500", "http_502", "http_503", "http_504",
+        "http_connection_error", "http_timeout",
+        "service unavailable", "internal server error",
+    ]):
         return "transient"
 
-    if "safety_block" in e:
+    # ── Safety block ──────────────────────────────────────────
+    if "safety_block" in e or "safety filter" in e:
         return "safety"
 
     return "unknown"
@@ -364,17 +412,18 @@ def call_ai(
     force_provider: str | None = None,
 ) -> str:
     """
-    Call best available Gemini model via REST API (no litellm needed).
-    Returns response text, or RATE_LIMIT_SENTINEL if all models fail.
+    Call best available Gemini model via REST API.
+    Returns response text, or RATE_LIMIT_SENTINEL if all models are exhausted.
+    _LAST_ERROR is ALWAYS updated with a precise, UI-friendly message on any failure.
     """
     global _LAST_ERROR
 
-    api_key    = _get_key("GEMINI_API_KEY")
+    api_key     = _get_key("GEMINI_API_KEY")
     token_limit = TASK_TOKENS.get(task, max_tokens)
 
     if not api_key:
         _LAST_ERROR = (
-            "GEMINI_API_KEY is not set.\n"
+            "NO_API_KEY: GEMINI_API_KEY is not set.\n"
             "Add it in Streamlit Cloud → Settings → Secrets:\n"
             "  GEMINI_API_KEY = \"AIzaSy...\"\n"
             "Get a free key at https://aistudio.google.com/apikey"
@@ -390,14 +439,17 @@ def call_ai(
     ]
 
     if not candidates:
+        # Don't wrap a previous error — set a fresh, clear message
         _LAST_ERROR = (
-            "All Gemini models are in cooldown or unavailable.\n"
-            "Click ⚡ Reset All Cooldowns and try again."
+            "ALL_UNAVAILABLE: All Gemini models are in cooldown or unavailable.\n"
+            "Click ⚡ Reset All Cooldowns and try again, or wait for the cooldown to expire."
         )
-        logger.error(f"[ROUTER] No candidates available. {_LAST_ERROR}")
+        logger.error(f"[ROUTER] No candidates. {_LAST_ERROR}")
         return RATE_LIMIT_SENTINEL
 
     logger.info(f"[ROUTER] Candidates for task={task}: {[c.provider for c in candidates]}")
+
+    last_error_for_exhaustion = ""  # Track the LAST model's error for final message
 
     for cfg in candidates:
         max_attempts = 2
@@ -426,31 +478,52 @@ def call_ai(
                 logger.info(f"[ROUTER] SUCCESS: {cfg.provider} | {tokens} tokens | task={task}")
                 return content
 
-            # ── Failed — classify and decide what to do ──
+            # ── Failed — classify and route ──────────────────
             error_class = _classify_error(content)
-            _LAST_ERROR = content
-            logger.warning(f"[ROUTER] {cfg.provider} [{error_class}] attempt={attempt}: {content[:200]}")
+            logger.warning(
+                f"[ROUTER] {cfg.provider} [{error_class}] attempt={attempt}: {content[:200]}"
+            )
 
+            # ── Auth failure ──────────────────────────────────
             if error_class == "auth":
-                _st(cfg.model_id).auth_failed = True
                 _LAST_ERROR = (
-                    f"❌ Authentication failed for {cfg.provider}.\n"
+                    f"AUTH_ERROR: Authentication failed for {cfg.provider}.\n"
                     f"Your GEMINI_API_KEY is invalid or expired.\n"
-                    f"→ Check Streamlit Cloud → Settings → Secrets\n"
+                    f"→ Go to Streamlit Cloud → Settings → Secrets and update GEMINI_API_KEY\n"
                     f"→ Get a new free key at https://aistudio.google.com/apikey\n"
                     f"Detail: {content[:300]}"
                 )
+                _st(cfg.model_id).auth_failed = True
+                last_error_for_exhaustion = _LAST_ERROR
                 logger.error(f"[ROUTER] AUTH FAIL: {_LAST_ERROR}")
-                break  # try next model (same key, but log clearly)
-
-            elif error_class in ("gone", "bad_request"):
-                _st(cfg.model_id).model_gone = True
-                logger.warning(
-                    f"[ROUTER] {cfg.provider} marked model_gone ({error_class}). "
-                    f"Trying fallback..."
-                )
                 break  # try next model
 
+            # ── Model not found / deprecated ──────────────────
+            elif error_class == "gone":
+                _LAST_ERROR = (
+                    f"MODEL_NOT_FOUND: {cfg.provider} — model '{cfg.model_id}' returned HTTP 404.\n"
+                    f"This model may have been deprecated by Google.\n"
+                    f"Trying next available model automatically...\n"
+                    f"Detail: {content[:300]}"
+                )
+                _mark_model_gone(cfg.model_id)
+                last_error_for_exhaustion = _LAST_ERROR
+                logger.warning(f"[ROUTER] MODEL GONE: {_LAST_ERROR}")
+                break  # try next model
+
+            # ── Bad request ───────────────────────────────────
+            elif error_class == "bad_request":
+                _LAST_ERROR = (
+                    f"BAD_REQUEST: {cfg.provider} rejected the request (HTTP 400).\n"
+                    f"This may be a temporary API issue. Trying fallback model...\n"
+                    f"Detail: {content[:300]}"
+                )
+                _mark_model_gone(cfg.model_id)
+                last_error_for_exhaustion = _LAST_ERROR
+                logger.warning(f"[ROUTER] BAD REQUEST: {_LAST_ERROR}")
+                break  # try next model
+
+            # ── Rate limit ────────────────────────────────────
             elif error_class == "rate_limit":
                 if attempt < max_attempts:
                     logger.info(f"[ROUTER] Rate limit — retrying {cfg.provider} in 3s...")
@@ -458,61 +531,60 @@ def call_ai(
                     continue
                 _mark_rate_limit(cfg.model_id)
                 _LAST_ERROR = (
-                    f"⚠️ {cfg.provider} rate-limited (HTTP 429).\n"
-                    f"{'Trying Gemini 1.5 Flash fallback...' if '2.0' in cfg.model_id else 'Both models rate-limited. Wait 30-60s, then Reset All Cooldowns.'}\n"
+                    f"RATE_LIMIT: {cfg.provider} is rate-limited (HTTP 429).\n"
+                    f"{'Trying Gemini 2.0 Flash Lite fallback...' if 'lite' not in cfg.model_id.lower() else 'Both models rate-limited. Wait 30–60s then click ⚡ Reset All Cooldowns.'}\n"
                     f"Detail: {content[:200]}"
                 )
+                last_error_for_exhaustion = _LAST_ERROR
                 logger.warning(f"[ROUTER] RATE LIMIT: {_LAST_ERROR}")
                 break  # try next model
 
+            # ── Transient server error ────────────────────────
             elif error_class == "transient":
                 if attempt < max_attempts:
                     logger.info(f"[ROUTER] Transient error — retrying {cfg.provider} in 5s...")
                     time.sleep(5)
                     continue
                 _LAST_ERROR = (
-                    f"⚠️ {cfg.provider} returned a server error.\n"
-                    f"This is usually temporary. Trying fallback model...\n"
+                    f"SERVER_ERROR: {cfg.provider} returned a temporary server error.\n"
+                    f"Trying fallback model...\n"
                     f"Detail: {content[:200]}"
                 )
+                last_error_for_exhaustion = _LAST_ERROR
                 logger.warning(f"[ROUTER] TRANSIENT (exhausted): {_LAST_ERROR}")
                 break  # try next model (no cooldown — it's transient)
 
+            # ── Safety block ──────────────────────────────────
             elif error_class == "safety":
-                # Safety block — not a provider issue, content issue
                 _LAST_ERROR = (
-                    f"⚠️ {cfg.provider} blocked the response for safety reasons.\n"
+                    f"SAFETY_BLOCK: {cfg.provider} blocked the response for safety reasons.\n"
                     f"Try rephrasing your prompt."
                 )
                 logger.warning(f"[ROUTER] SAFETY BLOCK: {_LAST_ERROR}")
-                return RATE_LIMIT_SENTINEL  # Don't try fallback — same content will be blocked
+                return RATE_LIMIT_SENTINEL  # Same content will be blocked on other models
 
+            # ── Unknown ───────────────────────────────────────
             else:
-                # Unknown error
                 _LAST_ERROR = (
-                    f"⚠️ Unexpected error from {cfg.provider}.\n"
+                    f"UNKNOWN_ERROR: Unexpected error from {cfg.provider}.\n"
                     f"Detail: {content[:300]}"
                 )
+                last_error_for_exhaustion = _LAST_ERROR
                 logger.error(f"[ROUTER] UNKNOWN: {_LAST_ERROR}")
                 if attempt < max_attempts:
                     time.sleep(2)
                     continue
                 break  # try next model
 
-    # All candidates exhausted
-    _LAST_ERROR = (
-        f"All Gemini models failed.\nLast error: {_LAST_ERROR}\n\n"
-        "To fix:\n"
-        "1. Check GEMINI_API_KEY in Streamlit Cloud → Settings → Secrets\n"
-        "2. Verify at https://aistudio.google.com/apikey\n"
-        "3. Click ⚡ Reset All Cooldowns and retry"
-    )
-    logger.error(f"[ROUTER] ALL MODELS EXHAUSTED. {_LAST_ERROR}")
+    # ── All candidates exhausted ──────────────────────────────
+    # Use the last real error (NOT a wrapped version that re-embeds old error strings)
+    _LAST_ERROR = last_error_for_exhaustion or _LAST_ERROR
+    logger.error(f"[ROUTER] ALL MODELS EXHAUSTED. Last error: {_LAST_ERROR}")
     return RATE_LIMIT_SENTINEL
 
 
 # ─────────────────────────────────────────────────────────────
-# BACKWARD-COMPATIBLE SHIM (drop-in for v3.x)
+# BACKWARD-COMPATIBLE SHIM (drop-in for v4.0 / v3.x)
 # ─────────────────────────────────────────────────────────────
 def call_ai_compat(
     messages    : list,
@@ -524,7 +596,7 @@ def call_ai_compat(
 
 
 # ─────────────────────────────────────────────────────────────
-# UI HELPERS (same interface as v3.x)
+# UI HELPERS (same interface as v4.0 / v3.x)
 # ─────────────────────────────────────────────────────────────
 def get_router_status() -> list[dict]:
     rows    = []
@@ -539,7 +611,8 @@ def get_router_status() -> list[dict]:
         elif s.auth_failed:
             status = "🔴 Auth Failed — GEMINI_API_KEY is invalid or expired"
         elif s.model_gone:
-            status = "⚫ Model Unavailable — auto-recovers on Reset"
+            remaining_ttl = int(_MODEL_GONE_TTL - (now - s.model_gone_since))
+            status = f"⚫ Model 404 — auto-recovers in {max(remaining_ttl, 0)}s or click Reset"
         elif now < s.rate_limited_until:
             remaining = int(s.rate_limited_until - now)
             status = f"🟡 Cooldown {remaining}s (hit #{s.rate_limit_count}) — auto-recovers"
