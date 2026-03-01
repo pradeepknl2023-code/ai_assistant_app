@@ -1,15 +1,15 @@
 """
-Enterprise AI ETL Platform  ·  v8.1
+Enterprise AI ETL Platform  ·  v8.2
 =====================================
-FIXES & NEW FEATURES in v8.1:
-  ✅ FIXED: ai_router now calls Gemini REST API directly (no litellm needed)
-             — eliminates "All AI Providers Rate-Limited" false positives
-             — real HTTP status codes (429/401/400/500) correctly classified
-             — no extra dependencies; just requests (already installed)
-  ✅ FIXED: RATE_LIMIT_SENTINEL now shows real error message from _LAST_ERROR
-  ✅ FIXED: requirements.txt note — litellm no longer required
-  ✅ Retained v8.0: Industry-standard PO-quality Jira stories
-  ✅ Retained v8.0: 5 SDLC subtasks, Gherkin AC, velocity-aware sprints
+FIXES in v8.2:
+  ✅ FIXED: ai_router fallback model changed from gemini-1.5-flash → gemini-2.0-flash-lite
+             (gemini-1.5-flash was removed from v1beta API — caused HTTP 404 on every fallback)
+  ✅ FIXED: show_ai_error() now correctly detects MODEL_NOT_FOUND (404) vs RATE_LIMIT (429)
+             (v8.1 falsely showed "rate-limited" when the real error was a deprecated model)
+  ✅ FIXED: _LAST_ERROR is now always explicitly updated in every error branch in ai_router
+             (silent 404 was leaving stale 429 message in _LAST_ERROR → wrong UI branch)
+  ✅ Retained v8.1: Gemini REST API direct calls, no litellm needed
+  ✅ Retained v8.0: Industry-standard PO-quality Jira stories, SDLC subtasks, Gherkin AC
   ✅ Retained v7.0: Example prompts, inline edit, Jira REST API export
   ✅ Retained v6.x: Bank-grade PII masking, GDE flow, audit log, login
 
@@ -19,7 +19,6 @@ REQUIREMENTS (requirements.txt):
   numpy
   requests
   xlsxwriter
-  (litellm is optional — NOT required in v8.1+)
 """
 
 import streamlit as st
@@ -166,7 +165,7 @@ def render_login_page():
     </style>
     <div class="login-container">
         <div class="login-title">⚡ Enterprise AI ETL Platform</div>
-        <div class="login-sub">SECURE LOGIN · BANK-GRADE PRIVACY · v8.1</div>
+        <div class="login-sub">SECURE LOGIN · BANK-GRADE PRIVACY · v8.2</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -269,7 +268,7 @@ if not ROUTER_OK:
         f"### ⚠️ AI Router Import Failed\n"
         f"**Error:** `{ROUTER_ERR}`\n\n"
         f"Make sure `ai_router.py` is in the same folder as `app.py`.\n"
-        f"**No additional packages needed** — v8.1 uses direct REST API calls."
+        f"**No additional packages needed** — v8.2 uses direct REST API calls."
     )
     st.stop()
 
@@ -742,14 +741,14 @@ with col_logout:
 st.markdown(f"""<div class="main-header">
     <div>
         <div style="color:rgba(255,255,255,.6);font-size:12px;margin-top:4px;">
-            AI POWERED · GEMINI REST API (DIRECT) · v8.1 · 🔒 BANK-GRADE PRIVACY
+            AI POWERED · GEMINI REST API (DIRECT) · v8.2 · 🔒 BANK-GRADE PRIVACY
         </div>
         <h1>⚡ Enterprise AI Transformation &amp; Delivery Platform</h1>
         <div class="secure-badge">🛡️ PII PROTECTED · SCHEMA-ONLY AI · DECRYPT ON DEMAND · AUDIT LOGGED</div>
         <div class="provider-pill">🤖 Last Used: {active_prov} &nbsp;·&nbsp; {active_model}</div>
         <div class="provider-pill" style="background:rgba(255,199,44,.15);border-color:rgba(255,199,44,.4);color:#FFC72C;">⏭️ Next: {next_prov}</div>
     </div>
-    <div style="text-align:right;"><div class="version-badge">v8.1 GEMINI DIRECT</div></div>
+    <div style="text-align:right;"><div class="version-badge">v8.2 GEMINI DIRECT</div></div>
 </div>""", unsafe_allow_html=True)
 
 st.markdown(f"""<div class="session-bar">
@@ -772,39 +771,141 @@ else:
     ])
     tab_admin = None
 
-# ─────────────────────────────────────────────────────────
-# HELPER: Show rate-limit error with real message
-# ─────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# SHOW AI ERROR  ← FULLY REWRITTEN IN v8.2
+# Correctly detects: 404 model-not-found, 429 rate-limit, 401 auth,
+# network errors, safety blocks — no more false "rate-limited" messages.
+# ═══════════════════════════════════════════════════════════
 def show_ai_error(label: str = ""):
     real_err = get_last_error()
-    if "401" in real_err or "auth" in real_err.lower() or "invalid api key" in real_err.lower():
+    e = real_err.lower()
+
+    # ── 1. Auth / API key invalid (401, 403) ─────────────────────────────────
+    if (
+        "auth_error"        in e or
+        "http_401"          in e or
+        "http_403"          in e or
+        "invalid api key"   in e or
+        "api key not valid" in e or
+        "authentication"    in e or
+        "permission_denied" in e or
+        "unauthorized"      in e
+    ):
         st.error(
             f"### 🔑 Authentication Error\n\n"
             f"Your **GEMINI_API_KEY** is invalid or expired.\n\n"
             f"**Fix:**\n"
             f"1. Go to https://aistudio.google.com/apikey\n"
             f"2. Create a new free API key\n"
-            f"3. Add it to Streamlit Cloud → Settings → Secrets:\n"
-            f"   `GEMINI_API_KEY = \"AIzaSy...\"`\n\n"
+            f"3. Update **Streamlit Cloud → Settings → Secrets**:\n"
+            f"   ```toml\n   GEMINI_API_KEY = \"AIzaSy...\"\n   ```\n\n"
             f"**Detail:** `{real_err[:300]}`"
         )
-    elif "429" in real_err or "rate" in real_err.lower() or "quota" in real_err.lower():
+
+    # ── 2. Model not found / deprecated (404) ────────────────────────────────
+    elif (
+        "model_not_found"                  in e or
+        "http_404"                         in e or
+        "is not found for api version"     in e or
+        "not supported for generatecontent" in e or
+        "decommissioned"                   in e or
+        "no longer supported"              in e
+    ):
         st.error(
-            f"### ⏱️ Rate Limited\n\n"
-            f"Both Gemini models are rate-limited (HTTP 429).\n\n"
-            f"**Fix:** Wait 30–60 seconds, then click **⚡ Reset All Cooldowns** and retry.\n\n"
+            f"### 🚫 Model Not Found (HTTP 404)\n\n"
+            f"A Gemini model ID returned HTTP 404 — it has been deprecated or renamed by Google.\n\n"
+            f"**This is already fixed in v8.2** — the fallback is now `gemini-2.0-flash-lite`.\n\n"
+            f"**If you still see this:**\n"
+            f"1. Make sure you are running the latest **ai_router.py v4.1**\n"
+            f"2. Click **⚡ Reset All Cooldowns** in the provider panel\n"
+            f"3. Retry your request\n\n"
+            f"**Detail:** `{real_err[:300]}`"
+        )
+
+    # ── 3. Rate limited (429 / quota exhausted) ───────────────────────────────
+    elif (
+        "rate_limit"         in e or
+        "http_429"           in e or
+        "resource_exhausted" in e or
+        "too many requests"  in e or
+        "quota"              in e
+    ):
+        st.error(
+            f"### ⏱️ Rate Limited (HTTP 429)\n\n"
+            f"Both Gemini models have hit their free-tier quota limit.\n\n"
+            f"**Fix:**\n"
+            f"1. Wait **30–60 seconds**\n"
+            f"2. Click **⚡ Reset All Cooldowns** in the provider status panel\n"
+            f"3. Retry your request\n\n"
+            f"Free tier limits: 15 RPM / 1,500 RPD per model.\n\n"
             f"**Detail:** `{real_err[:200]}`"
         )
-    elif "connection" in real_err.lower() or "timeout" in real_err.lower():
+
+    # ── 4. All models unavailable (cooldown / model_gone combo) ───────────────
+    elif (
+        "all_unavailable"        in e or
+        "all gemini models"      in e or
+        "no gemini model"        in e or
+        "no candidates available" in e
+    ):
         st.error(
-            f"### 🌐 Network Error\n\n"
-            f"Could not reach Gemini API. Check your internet connection.\n\n"
+            f"### ⚠️ No Models Available\n\n"
+            f"All configured Gemini models are currently in cooldown or marked unavailable.\n\n"
+            f"**Fix:**\n"
+            f"1. Click **⚡ Reset All Cooldowns** in the AI Provider Status panel\n"
+            f"2. Retry immediately — all cooldowns are cleared on reset\n\n"
+            f"**Detail:** `{real_err[:300]}`"
+        )
+
+    # ── 5. No API key configured ──────────────────────────────────────────────
+    elif (
+        "no_api_key"              in e or
+        "gemini_api_key is not set" in e or
+        ("gemini" in e and "not set" in e)
+    ):
+        st.error(
+            f"### 🔑 API Key Not Configured\n\n"
+            f"**GEMINI_API_KEY** is missing from Streamlit Secrets.\n\n"
+            f"**Fix:**\n"
+            f"1. Go to https://aistudio.google.com/apikey → Create free API key\n"
+            f"2. In Streamlit Cloud: **App → Settings → Secrets**, add:\n"
+            f"   ```toml\n   GEMINI_API_KEY = \"AIzaSy...\"\n   ```\n"
+            f"3. Save and re-run the app"
+        )
+
+    # ── 6. Network / server error ─────────────────────────────────────────────
+    elif (
+        "server_error"       in e or
+        "connection"         in e or
+        "timeout"            in e or
+        "http_500"           in e or
+        "http_502"           in e or
+        "http_503"           in e or
+        "http_504"           in e
+    ):
+        st.error(
+            f"### 🌐 Network / Server Error\n\n"
+            f"Could not reach the Gemini API, or Google returned a server error.\n\n"
+            f"**Fix:**\n"
+            f"1. Check your internet connection\n"
+            f"2. Wait 10–15 seconds and retry (5xx errors are usually temporary)\n"
+            f"3. Check https://status.cloud.google.com for any outages\n\n"
             f"**Detail:** `{real_err[:200]}`"
         )
+
+    # ── 7. Safety block ───────────────────────────────────────────────────────
+    elif "safety" in e:
+        st.warning(
+            f"### 🛡️ Content Safety Block\n\n"
+            f"Gemini blocked this response due to its safety filters.\n\n"
+            f"**Fix:** Rephrase your prompt to be more specific and business-focused."
+        )
+
+    # ── 8. Catch-all fallback ─────────────────────────────────────────────────
     else:
         st.error(
             f"### ⚠️ AI Error{' — ' + label if label else ''}\n\n"
-            f"{real_err[:400] if real_err else 'Unknown error. Check Streamlit logs for details.'}"
+            f"{real_err[:400] if real_err else 'Unknown error — check Streamlit logs for details.'}"
         )
 
 # ───────────────────────────────────────────────────────────
@@ -1090,7 +1191,7 @@ with tab1:
 # ───────────────────────────────────────────────────────────
 with tab2:
     st.markdown("""<div style="background:#F0F7FF;border:1px solid #BBDEFB;border-left:4px solid #1E90FF;border-radius:8px;padding:14px 18px;margin-bottom:16px;">
-        <div style="font-size:13px;font-weight:700;color:#1565C0;margin-bottom:8px;">📋 AI JIRA BREAKDOWN — v8.1 INDUSTRY-STANDARD</div>
+        <div style="font-size:13px;font-weight:700;color:#1565C0;margin-bottom:8px;">📋 AI JIRA BREAKDOWN — v8.2 INDUSTRY-STANDARD</div>
         <div style="font-size:12px;color:#333;line-height:2.0;">
             ✅ <b>User stories:</b> "As a [Business Persona], I want [capability], so that [measurable benefit]"<br>
             ✅ <b>SDLC subtasks:</b> Analysis &amp; Design → Development → Testing &amp; QA → Deployment → Documentation<br>
@@ -1406,7 +1507,6 @@ with tab2:
             dep_data = [{"Story": d.get("story_id",""), "Depends On": d.get("depends_on",""), "Reason": d.get("reason","")} for d in deps]
             st.dataframe(pd.DataFrame(dep_data), use_container_width=True, hide_index=True)
 
-        # ── EXPORT ────────────────────────────────────────
         st.markdown("---")
         st.markdown('<div class="jira-export-panel"><div style="color:#69F0AE;font-family:monospace;font-size:13px;font-weight:700;letter-spacing:1px;margin-bottom:12px;">🚀 EXPORT</div>', unsafe_allow_html=True)
         export_tab1, export_tab2 = st.tabs(["📤 Push to Jira Cloud", "⬇️ Download Files"])
@@ -1500,7 +1600,7 @@ with tab2:
                 for st_item in s.get("subtasks",[]):
                     txt_lines.append(f"  • {st_item.get('title','')} (~{st_item.get('hours','')}h) — {st_item.get('role','')}")
                 txt_lines.append("")
-            ec1.download_button("⬇ TXT", "\n".join(txt_lines), "jira_breakdown_v81.txt", "text/plain")
+            ec1.download_button("⬇ TXT", "\n".join(txt_lines), "jira_breakdown_v82.txt", "text/plain")
 
             xb = BytesIO()
             with pd.ExcelWriter(xb, engine="xlsxwriter") as w:
@@ -1528,9 +1628,9 @@ with tab2:
                 }]).to_excel(w, sheet_name="Epic", index=False)
                 if current_data.get("risks"):
                     pd.DataFrame(current_data["risks"]).to_excel(w, sheet_name="Risks", index=False)
-            ec2.download_button("⬇ Excel", xb.getvalue(), "jira_breakdown_v81.xlsx",
+            ec2.download_button("⬇ Excel", xb.getvalue(), "jira_breakdown_v82.xlsx",
                                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-            ec3.download_button("⬇ JSON", json.dumps(current_data, indent=2), "jira_breakdown_v81.json", "application/json")
+            ec3.download_button("⬇ JSON", json.dumps(current_data, indent=2), "jira_breakdown_v82.json", "application/json")
         st.markdown("</div>", unsafe_allow_html=True)
 
 # ───────────────────────────────────────────────────────────
@@ -1538,13 +1638,12 @@ with tab2:
 # ───────────────────────────────────────────────────────────
 with tab3:
     st.markdown(f"""<div style="background:linear-gradient(135deg,#B31B1B,#7a1212);border-radius:12px;padding:28px 32px;margin-bottom:24px;">
-        <div style="color:#FFC72C;font-family:'Rajdhani',sans-serif;font-size:28px;font-weight:700;margin-bottom:8px;">⚡ v8.1 — Gemini Direct REST API</div>
+        <div style="color:#FFC72C;font-family:'Rajdhani',sans-serif;font-size:28px;font-weight:700;margin-bottom:8px;">⚡ v8.2 — Gemini Direct REST API · Fixed Model Routing</div>
         <div style="color:rgba(255,255,255,.85);font-size:14px;line-height:2.2;">
-            ✅ <b>No litellm:</b> Calls Gemini REST API directly via requests — simpler, faster, more reliable<br>
-            ✅ <b>Real errors:</b> HTTP 429/401/400/500 properly detected and shown to user<br>
-            ✅ <b>User stories:</b> "As a [Business Persona], I want..., so that [measurable benefit]"<br>
-            ✅ <b>SDLC subtasks:</b> Analysis → Development → Testing → Deployment → Documentation<br>
-            ✅ <b>Gherkin AC:</b> Happy Path + Edge Case + Error Scenario per story<br>
+            ✅ <b>Root cause fixed:</b> gemini-1.5-flash (HTTP 404) → gemini-2.0-flash-lite (active, free)<br>
+            ✅ <b>Error masking fixed:</b> 404 no longer silently inherits stale 429 message<br>
+            ✅ <b>7-branch error handler:</b> auth / model-not-found / rate-limit / unavailable / no-key / network / safety<br>
+            ✅ <b>No litellm:</b> Direct REST API calls via requests — simpler, faster, more reliable<br>
             ✅ <b>Active provider:</b> <span style="color:#69F0AE;">{active_prov} ({active_model})</span>
         </div>
     </div>""", unsafe_allow_html=True)
@@ -1565,27 +1664,25 @@ with tab3:
     </div>""", unsafe_allow_html=True)
 
     st.markdown("---")
-    st.markdown("### 🆕 v8.1 Architecture: Direct REST vs litellm")
+    st.markdown("### 🔧 v8.2 Bug Fix Summary")
     bcol1, bcol2 = st.columns(2)
     with bcol1:
         st.markdown("""<div style="background:#FFF3E0;border:2px solid #FFB300;border-radius:10px;padding:18px;">
-        <div style="font-weight:700;color:#E65100;margin-bottom:10px;">❌ v8.0 (litellm wrapper)</div>
+        <div style="font-weight:700;color:#E65100;margin-bottom:10px;">❌ v8.1 — What was broken</div>
         <div style="font-size:12px;color:#555;line-height:2.0;">
-        • Extra pip dependency (litellm)<br>
-        • litellm wraps errors — hides real HTTP status codes<br>
-        • "Invalid API key" didn't match classifier (underscore vs space)<br>
-        • "Model not found" wasn't caught — fell through to false rate-limit<br>
-        • User saw "All AI Providers Rate-Limited" when actually auth failed
+        • Fallback model gemini-1.5-flash removed from v1beta API → HTTP 404<br>
+        • 404 error branch did NOT update _LAST_ERROR → stale 429 string persisted<br>
+        • show_ai_error() matched "rate" substring inside 404 message → showed wrong UI<br>
+        • User saw "Both models rate-limited. Wait 30-60s" — completely misleading
         </div></div>""", unsafe_allow_html=True)
     with bcol2:
         st.markdown("""<div style="background:#E8F5E9;border:2px solid #66BB6A;border-radius:10px;padding:18px;">
-        <div style="font-weight:700;color:#2E7D32;margin-bottom:10px;">✅ v8.1 (direct REST API)</div>
+        <div style="font-weight:700;color:#2E7D32;margin-bottom:10px;">✅ v8.2 — What is fixed</div>
         <div style="font-size:12px;color:#333;line-height:2.0;">
-        • Zero extra dependencies — only requests (always installed)<br>
-        • Real HTTP 401/429/400/500 status codes directly<br>
-        • Clear error messages: "Authentication failed", "Rate limited", etc.<br>
-        • Specific fix instructions shown for each error type<br>
-        • get_last_error() exposes real error to UI
+        • Fallback → gemini-2.0-flash-lite (confirmed active, larger free quota)<br>
+        • Every error branch explicitly sets _LAST_ERROR with accurate message<br>
+        • show_ai_error() uses structured prefix tokens (MODEL_NOT_FOUND, RATE_LIMIT…)<br>
+        • 7 distinct error branches: auth / 404 / 429 / unavailable / no-key / network / safety
         </div></div>""", unsafe_allow_html=True)
 
 # ───────────────────────────────────────────────────────────
