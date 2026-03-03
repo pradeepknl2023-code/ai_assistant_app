@@ -1,0 +1,1127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>NEXUS ETL — AI Pipeline Engine</title>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@300;400;500;600;700&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet"/>
+<style>
+:root {
+  --bg: #020408;
+  --surface: #060c14;
+  --card: #081018;
+  --border: #0d2035;
+  --border2: #0a3050;
+  --cyan: #00e5ff;
+  --cyan2: #00b4d8;
+  --green: #00ff88;
+  --amber: #ffb300;
+  --red: #ff3d5a;
+  --purple: #a855f7;
+  --pink: #f472b6;
+  --text: #cce8f4;
+  --muted: #3a6080;
+  --dim: #1a3045;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:var(--bg);color:var(--text);font-family:'Rajdhani',sans-serif;font-size:15px;overflow-x:hidden;min-height:100vh;}
+body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellipse 80% 60% at 50% 0%,rgba(0,229,255,0.04) 0%,transparent 70%);pointer-events:none;}
+
+/* SCROLLBAR */
+::-webkit-scrollbar{width:4px;height:4px;}
+::-webkit-scrollbar-track{background:var(--bg);}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px;}
+
+/* GRID NOISE OVERLAY */
+.grid-overlay{position:fixed;inset:0;background-image:linear-gradient(rgba(0,229,255,0.015) 1px,transparent 1px),linear-gradient(90deg,rgba(0,229,255,0.015) 1px,transparent 1px);background-size:40px 40px;pointer-events:none;z-index:0;}
+
+/* HEADER */
+header{position:relative;z-index:10;display:flex;align-items:center;justify-content:space-between;padding:12px 28px;border-bottom:1px solid var(--border);background:rgba(6,12,20,0.95);backdrop-filter:blur(20px);}
+.logo{display:flex;align-items:center;gap:12px;}
+.logo-hex{width:36px;height:36px;position:relative;}
+.logo-hex svg{width:36px;height:36px;}
+.logo-text{font-family:'Orbitron',monospace;font-size:18px;font-weight:900;letter-spacing:3px;color:var(--cyan);text-shadow:0 0 20px rgba(0,229,255,0.5);}
+.logo-sub{font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:4px;margin-top:2px;}
+.header-status{display:flex;align-items:center;gap:20px;}
+.status-pill{display:flex;align-items:center;gap:6px;font-family:'Share Tech Mono',monospace;font-size:11px;padding:4px 12px;border:1px solid var(--border2);border-radius:2px;color:var(--muted);}
+.status-pill .dot{width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 2s infinite;}
+.api-badge{font-family:'Share Tech Mono',monospace;font-size:10px;padding:4px 10px;border:1px solid rgba(168,85,247,0.4);color:var(--purple);border-radius:2px;letter-spacing:1px;}
+@keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.4;}}
+
+/* MAIN LAYOUT */
+.app{display:grid;grid-template-columns:280px 1fr 300px;grid-template-rows:auto 1fr;height:calc(100vh - 57px);position:relative;z-index:1;}
+
+/* LEFT PANEL */
+.left-panel{border-right:1px solid var(--border);background:var(--surface);display:flex;flex-direction:column;overflow:hidden;}
+.panel-header{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;}
+.panel-title{font-family:'Orbitron',monospace;font-size:10px;letter-spacing:3px;color:var(--cyan);font-weight:700;}
+.section{padding:14px 16px;border-bottom:1px solid var(--border);}
+.section-label{font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:3px;color:var(--muted);margin-bottom:10px;}
+
+/* GROQ KEY INPUT */
+.field{margin-bottom:10px;}
+.field label{font-size:10px;letter-spacing:2px;color:var(--muted);font-family:'Share Tech Mono',monospace;display:block;margin-bottom:5px;}
+.field input,.field select,.field textarea{width:100%;background:var(--card);border:1px solid var(--border2);color:var(--text);padding:8px 10px;font-family:'Share Tech Mono',monospace;font-size:11px;border-radius:2px;outline:none;transition:border-color 0.2s;}
+.field input:focus,.field select:focus,.field textarea:focus{border-color:var(--cyan);box-shadow:0 0 0 1px rgba(0,229,255,0.1);}
+.field textarea{resize:vertical;min-height:60px;}
+.field select option{background:var(--card);}
+
+/* PATH CONNECTOR */
+.path-item{display:flex;align-items:center;gap:8px;padding:7px 10px;border:1px solid var(--border);border-radius:2px;margin-bottom:6px;cursor:pointer;transition:all 0.2s;background:var(--card);}
+.path-item:hover{border-color:var(--cyan2);background:rgba(0,180,216,0.05);}
+.path-item.active{border-color:var(--cyan);background:rgba(0,229,255,0.05);}
+.path-icon{font-size:13px;color:var(--cyan);}
+.path-info{flex:1;min-width:0;}
+.path-name{font-size:12px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.path-meta{font-size:10px;color:var(--muted);font-family:'Share Tech Mono',monospace;}
+.path-status{width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green);}
+
+/* SCHEDULER */
+.schedule-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+.schedule-btn{padding:8px;border:1px solid var(--border);background:var(--card);color:var(--muted);font-family:'Share Tech Mono',monospace;font-size:10px;letter-spacing:1px;cursor:pointer;border-radius:2px;transition:all 0.2s;text-align:center;}
+.schedule-btn:hover,.schedule-btn.active{border-color:var(--amber);color:var(--amber);background:rgba(255,179,0,0.05);box-shadow:0 0 8px rgba(255,179,0,0.1);}
+
+/* MIDDLE - CANVAS */
+.center-panel{display:flex;flex-direction:column;overflow:hidden;background:var(--bg);}
+
+/* PROMPT ZONE */
+.prompt-zone{padding:16px 20px;border-bottom:1px solid var(--border);background:var(--surface);}
+.prompt-label{font-family:'Orbitron',monospace;font-size:9px;letter-spacing:3px;color:var(--cyan);margin-bottom:8px;display:flex;align-items:center;gap:8px;}
+.prompt-label::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,var(--border2),transparent);}
+.prompt-input-wrap{position:relative;}
+.prompt-input{width:100%;background:var(--card);border:1px solid var(--border2);color:var(--text);padding:12px 120px 12px 14px;font-family:'Rajdhani',sans-serif;font-size:14px;font-weight:500;border-radius:3px;outline:none;resize:none;min-height:68px;line-height:1.5;transition:border-color 0.3s;}
+.prompt-input:focus{border-color:var(--cyan);box-shadow:0 0 0 1px rgba(0,229,255,0.08),0 0 20px rgba(0,229,255,0.05);}
+.prompt-input::placeholder{color:var(--muted);}
+.prompt-actions{position:absolute;right:10px;bottom:10px;display:flex;gap:6px;}
+.btn{padding:7px 16px;border:none;cursor:pointer;font-family:'Orbitron',monospace;font-size:9px;letter-spacing:2px;border-radius:2px;transition:all 0.2s;font-weight:700;}
+.btn-primary{background:var(--cyan);color:var(--bg);}
+.btn-primary:hover{background:#00ffff;box-shadow:0 0 20px rgba(0,229,255,0.4);}
+.btn-secondary{background:transparent;border:1px solid var(--border2);color:var(--muted);}
+.btn-secondary:hover{border-color:var(--cyan2);color:var(--cyan2);}
+.btn-danger{background:rgba(255,61,90,0.1);border:1px solid rgba(255,61,90,0.3);color:var(--red);}
+.btn-danger:hover{background:rgba(255,61,90,0.2);}
+.btn-green{background:var(--green);color:var(--bg);}
+.btn-green:hover{box-shadow:0 0 20px rgba(0,255,136,0.4);}
+.btn:disabled{opacity:0.4;cursor:not-allowed;}
+
+/* CANVAS AREA */
+.canvas-area{flex:1;position:relative;overflow:hidden;}
+#etl-canvas{width:100%;height:100%;display:block;}
+
+/* STATS BAR */
+.stats-bar{display:flex;align-items:center;gap:0;border-top:1px solid var(--border);background:var(--surface);padding:0;}
+.stat{flex:1;padding:8px 14px;border-right:1px solid var(--border);display:flex;flex-direction:column;gap:2px;}
+.stat:last-child{border-right:none;}
+.stat-val{font-family:'Orbitron',monospace;font-size:13px;font-weight:700;color:var(--cyan);}
+.stat-key{font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:2px;}
+
+/* RIGHT PANEL */
+.right-panel{border-left:1px solid var(--border);background:var(--surface);display:flex;flex-direction:column;overflow:hidden;}
+.tab-bar{display:flex;border-bottom:1px solid var(--border);}
+.tab{flex:1;padding:11px 8px;text-align:center;font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:2px;color:var(--muted);cursor:pointer;border-bottom:2px solid transparent;transition:all 0.2s;}
+.tab.active{color:var(--cyan);border-bottom-color:var(--cyan);}
+.tab:hover:not(.active){color:var(--text);}
+.tab-content{flex:1;overflow-y:auto;padding:12px;}
+
+/* JIRA BOARD */
+.jira-cols{display:flex;flex-direction:column;gap:6px;}
+.jira-ticket{padding:10px 12px;background:var(--card);border:1px solid var(--border);border-radius:3px;cursor:pointer;transition:all 0.2s;position:relative;overflow:hidden;}
+.jira-ticket::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;}
+.jira-ticket.story::before{background:var(--purple);}
+.jira-ticket.task::before{background:var(--cyan);}
+.jira-ticket.epic::before{background:var(--amber);}
+.jira-ticket:hover{border-color:var(--border2);transform:translateX(2px);}
+.jira-ticket.done{opacity:0.5;}
+.ticket-id{font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--muted);}
+.ticket-title{font-size:12px;font-weight:600;color:var(--text);margin:3px 0;}
+.ticket-meta{display:flex;align-items:center;justify-content:space-between;margin-top:5px;}
+.ticket-type{font-size:9px;padding:2px 6px;border-radius:1px;font-family:'Share Tech Mono',monospace;letter-spacing:1px;}
+.ticket-type.story{background:rgba(168,85,247,0.15);color:var(--purple);}
+.ticket-type.task{background:rgba(0,229,255,0.1);color:var(--cyan);}
+.ticket-type.epic{background:rgba(255,179,0,0.15);color:var(--amber);}
+.ticket-status{font-size:9px;font-family:'Share Tech Mono',monospace;}
+.ticket-status.done{color:var(--green);}
+.ticket-status.progress{color:var(--amber);}
+.ticket-status.todo{color:var(--muted);}
+.ticket-pts{font-family:'Orbitron',monospace;font-size:10px;font-weight:700;color:var(--muted);}
+
+/* LOGS */
+.log-entry{font-family:'Share Tech Mono',monospace;font-size:10px;padding:4px 0;border-bottom:1px solid rgba(13,32,53,0.5);display:flex;gap:8px;line-height:1.5;}
+.log-time{color:var(--muted);white-space:nowrap;}
+.log-level{width:40px;text-align:center;border-radius:1px;padding:0 4px;}
+.log-level.info{color:var(--cyan);}
+.log-level.ok{color:var(--green);}
+.log-level.warn{color:var(--amber);}
+.log-level.err{color:var(--red);}
+.log-msg{color:var(--text);flex:1;}
+
+/* PIPELINE NODES on canvas */
+.node-tooltip{position:absolute;background:var(--card);border:1px solid var(--cyan);padding:8px 12px;border-radius:3px;font-family:'Share Tech Mono',monospace;font-size:10px;pointer-events:none;z-index:100;min-width:160px;box-shadow:0 0 20px rgba(0,229,255,0.2);}
+
+/* RUNNING ANIMATION */
+@keyframes flowPulse{0%{stroke-dashoffset:0;}100%{stroke-dashoffset:-40;}}
+@keyframes nodeGlow{0%,100%{filter:drop-shadow(0 0 4px currentColor);}50%{filter:drop-shadow(0 0 12px currentColor);}}
+@keyframes scanline{0%{transform:translateY(-100%);}100%{transform:translateY(100vh);}}
+.scanline{position:fixed;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,rgba(0,229,255,0.1),transparent);animation:scanline 8s linear infinite;pointer-events:none;z-index:999;}
+
+/* MODAL */
+.modal-overlay{position:fixed;inset:0;background:rgba(2,4,8,0.85);z-index:200;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px);}
+.modal{background:var(--card);border:1px solid var(--border2);border-radius:4px;padding:24px;width:500px;max-width:90vw;box-shadow:0 0 40px rgba(0,229,255,0.1);}
+.modal-title{font-family:'Orbitron',monospace;font-size:13px;letter-spacing:3px;color:var(--cyan);margin-bottom:16px;}
+.modal-actions{display:flex;gap:8px;margin-top:16px;justify-content:flex-end;}
+
+/* GENERATED CODE VIEW */
+.code-block{background:var(--bg);border:1px solid var(--border);padding:12px;border-radius:2px;font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--green);overflow-x:auto;white-space:pre;line-height:1.7;max-height:300px;overflow-y:auto;}
+
+/* PROGRESS */
+.progress-bar{height:2px;background:var(--border);border-radius:1px;overflow:hidden;margin:4px 0;}
+.progress-fill{height:100%;background:linear-gradient(90deg,var(--cyan),var(--green));transition:width 0.5s;border-radius:1px;}
+
+/* PIPELINE STAGE CARDS (left panel) */
+.stage-card{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--border);background:var(--bg);border-radius:2px;margin-bottom:5px;transition:all 0.3s;}
+.stage-card.active{border-color:var(--cyan);background:rgba(0,229,255,0.03);}
+.stage-card.done{border-color:var(--green);opacity:0.7;}
+.stage-icon{width:28px;height:28px;border-radius:2px;display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0;}
+.stage-info{flex:1;min-width:0;}
+.stage-name{font-size:11px;font-weight:600;letter-spacing:1px;}
+.stage-desc{font-size:9px;color:var(--muted);font-family:'Share Tech Mono',monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+
+/* Tooltips */
+[data-tip]{position:relative;}
+[data-tip]:hover::after{content:attr(data-tip);position:absolute;bottom:100%;left:50%;transform:translateX(-50%);background:var(--card);border:1px solid var(--border2);padding:4px 8px;border-radius:2px;font-family:'Share Tech Mono',monospace;font-size:9px;white-space:nowrap;z-index:50;color:var(--text);}
+
+/* Responsive scroll for panels */
+.left-panel,.right-panel{overflow-y:auto;}
+
+/* File path suggestion chips */
+.chip{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;background:rgba(0,229,255,0.08);border:1px solid rgba(0,229,255,0.2);border-radius:2px;font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--cyan2);cursor:pointer;margin:3px 3px 3px 0;transition:all 0.2s;}
+.chip:hover{background:rgba(0,229,255,0.15);border-color:var(--cyan);}
+
+/* Run controls */
+.run-bar{display:flex;align-items:center;gap:8px;padding:10px 16px;border-top:1px solid var(--border);background:var(--surface);}
+.run-bar .spacer{flex:1;}
+</style>
+</head>
+<body>
+<div class="scanline"></div>
+<div class="grid-overlay"></div>
+
+<!-- HEADER -->
+<header>
+  <div class="logo">
+    <svg class="logo-hex" viewBox="0 0 36 36">
+      <polygon points="18,2 32,10 32,26 18,34 4,26 4,10" fill="none" stroke="#00e5ff" stroke-width="1.5" opacity="0.6"/>
+      <polygon points="18,6 28,12 28,24 18,30 8,24 8,12" fill="rgba(0,229,255,0.05)" stroke="#00e5ff" stroke-width="1"/>
+      <text x="18" y="21" text-anchor="middle" fill="#00e5ff" font-family="Orbitron" font-size="10" font-weight="900">N</text>
+    </svg>
+    <div>
+      <div class="logo-text">NEXUS ETL</div>
+      <div class="logo-sub">AI PIPELINE ENGINE v2.0</div>
+    </div>
+  </div>
+  <div class="header-status">
+    <div class="status-pill"><div class="dot"></div>ENGINE READY</div>
+    <div class="api-badge" id="model-badge">⚡ GROQ / LLAMA-3.3-70B</div>
+    <div class="status-pill" id="clock-display" style="color:var(--cyan);border-color:rgba(0,229,255,0.3);">--:--:--</div>
+  </div>
+</header>
+
+<!-- MAIN APP -->
+<div class="app">
+
+  <!-- LEFT PANEL: Config + Paths + Scheduler -->
+  <div class="left-panel">
+
+    <!-- API CONFIG -->
+    <div class="panel-header">
+      <span style="color:var(--cyan);font-size:14px;">⚙</span>
+      <span class="panel-title">CONFIG</span>
+    </div>
+    <div class="section">
+      <div class="section-label">GROQ API KEY</div>
+      <div class="field">
+        <input type="password" id="groq-key" placeholder="gsk_xxxxxxxxxxxxxxxxxxxx" />
+      </div>
+      <div class="field">
+        <label>MODEL</label>
+        <select id="model-select">
+          <option value="llama-3.3-70b-versatile">llama-3.3-70b-versatile ⚡ FAST</option>
+          <option value="llama-3.1-70b-versatile">llama-3.1-70b-versatile</option>
+          <option value="mixtral-8x7b-32768">mixtral-8x7b — Long Context</option>
+          <option value="gemma2-9b-it">gemma2-9b — Ultra Fast</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- SOURCE CONNECTORS -->
+    <div class="section">
+      <div class="section-label">SOURCE CONNECTORS</div>
+      <div id="path-list">
+        <div class="path-item active" onclick="selectPath(this, '/data/sales/*.csv', 'CSV Files')">
+          <div class="path-icon">📁</div>
+          <div class="path-info">
+            <div class="path-name">/data/sales/*.csv</div>
+            <div class="path-meta">CSV · 142 files · 8.4 GB</div>
+          </div>
+          <div class="path-status"></div>
+        </div>
+        <div class="path-item" onclick="selectPath(this, 's3://datalake/events/', 'S3 Bucket')">
+          <div class="path-icon">☁</div>
+          <div class="path-info">
+            <div class="path-name">s3://datalake/events/</div>
+            <div class="path-meta">S3 · Parquet · 230 GB</div>
+          </div>
+          <div class="path-status"></div>
+        </div>
+        <div class="path-item" onclick="selectPath(this, 'pg://prod-db/transactions', 'PostgreSQL')">
+          <div class="path-icon">🗄</div>
+          <div class="path-info">
+            <div class="path-name">pg://prod-db/txns</div>
+            <div class="path-meta">PostgreSQL · Live CDC</div>
+          </div>
+          <div class="path-status"></div>
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;margin-top:8px;">
+        <div class="field" style="flex:1;margin:0;">
+          <input type="text" id="custom-path" placeholder="Add path / URL / connection string…" />
+        </div>
+        <button class="btn btn-secondary" style="padding:7px 10px;font-size:11px;" onclick="addCustomPath()">+</button>
+      </div>
+    </div>
+
+    <!-- TARGET -->
+    <div class="section">
+      <div class="section-label">TARGET DESTINATION</div>
+      <div class="field">
+        <select id="target-type">
+          <option value="table">Database Table</option>
+          <option value="parquet">Parquet File</option>
+          <option value="csv">CSV File</option>
+          <option value="json">JSON / NDJSON</option>
+          <option value="bigquery">BigQuery</option>
+          <option value="snowflake">Snowflake</option>
+          <option value="redshift">Redshift</option>
+        </select>
+      </div>
+      <div class="field">
+        <input type="text" id="target-path" placeholder="e.g. analytics.sales_summary or /output/result.parquet" />
+      </div>
+    </div>
+
+    <!-- SCHEDULER -->
+    <div class="section">
+      <div class="section-label">SCHEDULER</div>
+      <div class="schedule-grid">
+        <button class="schedule-btn active" id="sched-manual" onclick="setSchedule('manual')">MANUAL</button>
+        <button class="schedule-btn" id="sched-hourly" onclick="setSchedule('hourly')">HOURLY</button>
+        <button class="schedule-btn" id="sched-daily" onclick="setSchedule('daily')">DAILY 2AM</button>
+        <button class="schedule-btn" id="sched-weekly" onclick="setSchedule('weekly')">WEEKLY</button>
+      </div>
+      <div class="field" style="margin-top:8px;">
+        <label>CRON EXPRESSION</label>
+        <input type="text" id="cron-expr" value="0 2 * * *" placeholder="0 2 * * *" />
+      </div>
+      <div id="next-run" style="font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--amber);margin-top:6px;">NEXT RUN: —</div>
+    </div>
+
+    <!-- PIPELINE STAGES -->
+    <div class="section" style="flex:1;">
+      <div class="section-label">PIPELINE STAGES</div>
+      <div id="stage-list"></div>
+    </div>
+  </div>
+
+  <!-- CENTER: Canvas + Prompt -->
+  <div class="center-panel">
+
+    <!-- PROMPT ZONE -->
+    <div class="prompt-zone">
+      <div class="prompt-label">⚡ BUSINESS REQUIREMENT PROMPT</div>
+      <div class="prompt-input-wrap">
+        <textarea class="prompt-input" id="main-prompt" placeholder="Describe your ETL pipeline in natural language… e.g. 'Extract sales transactions from /data/sales/*.csv, join with customer master from PostgreSQL, calculate LTV metrics grouped by region, and load to BigQuery analytics.sales_kpis table — run daily at 2AM'"
+        ></textarea>
+        <div class="prompt-actions">
+          <button class="btn btn-secondary" onclick="loadSamplePrompt()">SAMPLE</button>
+          <button class="btn btn-primary" id="generate-btn" onclick="generatePipeline()">GENERATE ▶</button>
+        </div>
+      </div>
+      <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:0;">
+        <span class="chip" onclick="appendToPrompt('filter null values')">⚡ filter nulls</span>
+        <span class="chip" onclick="appendToPrompt('deduplicate by primary key')">⚡ dedup</span>
+        <span class="chip" onclick="appendToPrompt('normalize to USD currency')">⚡ currency norm</span>
+        <span class="chip" onclick="appendToPrompt('add created_at timestamp')">⚡ add timestamp</span>
+        <span class="chip" onclick="appendToPrompt('validate schema before load')">⚡ schema check</span>
+        <span class="chip" onclick="appendToPrompt('partition by date')">⚡ partition</span>
+      </div>
+    </div>
+
+    <!-- CANVAS -->
+    <div class="canvas-area">
+      <canvas id="etl-canvas"></canvas>
+      <div id="node-tooltip" class="node-tooltip" style="display:none;"></div>
+    </div>
+
+    <!-- STATS -->
+    <div class="stats-bar">
+      <div class="stat"><div class="stat-val" id="stat-records">0</div><div class="stat-key">RECORDS/SEC</div></div>
+      <div class="stat"><div class="stat-val" id="stat-processed">0</div><div class="stat-key">PROCESSED</div></div>
+      <div class="stat"><div class="stat-val" id="stat-errors">0</div><div class="stat-key">ERRORS</div></div>
+      <div class="stat"><div class="stat-val" id="stat-time">0.0s</div><div class="stat-key">ELAPSED</div></div>
+      <div class="stat"><div class="stat-val" id="stat-stage">IDLE</div><div class="stat-key">STAGE</div></div>
+    </div>
+
+    <!-- RUN BAR -->
+    <div class="run-bar">
+      <button class="btn btn-green" id="run-btn" onclick="runPipeline()" disabled>▶ RUN PIPELINE</button>
+      <button class="btn btn-danger" id="stop-btn" onclick="stopPipeline()" disabled>■ STOP</button>
+      <button class="btn btn-secondary" onclick="exportCode()">⬇ EXPORT CODE</button>
+      <button class="btn btn-secondary" onclick="showModal('jira')">📋 JIRA EXPORT</button>
+      <div class="spacer"></div>
+      <div id="run-status" style="font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--muted);">No pipeline generated</div>
+    </div>
+  </div>
+
+  <!-- RIGHT PANEL: Jira + Logs -->
+  <div class="right-panel">
+    <div class="tab-bar">
+      <div class="tab active" onclick="switchTab('jira', this)">JIRA</div>
+      <div class="tab" onclick="switchTab('logs', this)">LOGS</div>
+      <div class="tab" onclick="switchTab('schema', this)">SCHEMA</div>
+    </div>
+
+    <div class="tab-content" id="tab-jira">
+      <div style="font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--muted);margin-bottom:10px;letter-spacing:2px;">AI-GENERATED SPRINT BOARD</div>
+      <div class="jira-cols" id="jira-board">
+        <div style="color:var(--muted);font-size:11px;font-family:'Share Tech Mono',monospace;text-align:center;padding:30px 0;">Generate a pipeline to see Jira breakdown</div>
+      </div>
+    </div>
+
+    <div class="tab-content" id="tab-logs" style="display:none;">
+      <div style="font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--muted);margin-bottom:10px;letter-spacing:2px;display:flex;justify-content:space-between;">
+        <span>EXECUTION LOGS</span>
+        <span onclick="clearLogs()" style="cursor:pointer;color:var(--red);">CLEAR</span>
+      </div>
+      <div id="log-container"></div>
+    </div>
+
+    <div class="tab-content" id="tab-schema" style="display:none;">
+      <div style="font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--muted);margin-bottom:10px;letter-spacing:2px;">INFERRED SCHEMA</div>
+      <div id="schema-view"><div style="color:var(--muted);font-size:11px;font-family:'Share Tech Mono',monospace;text-align:center;padding:30px 0;">Schema will appear after generation</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL -->
+<div class="modal-overlay" id="modal" style="display:none;" onclick="closeModal(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-title" id="modal-title">EXPORT</div>
+    <div id="modal-body"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">CLOSE</button>
+      <button class="btn btn-primary" id="modal-copy" onclick="copyModalContent()">COPY</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ========================
+// STATE
+// ========================
+let pipelineStages = [];
+let isRunning = false;
+let runInterval = null;
+let animFrame = null;
+let particles = [];
+let selectedPath = '/data/sales/*.csv';
+let currentSchedule = 'manual';
+let generatedCode = '';
+let generatedJira = [];
+let generatedSchema = [];
+let elapsed = 0;
+let elapsedInterval = null;
+let recordsPerSec = 0;
+let totalProcessed = 0;
+let errors = 0;
+
+// ========================
+// CANVAS ENGINE (Ab Initio-style)
+// ========================
+const canvas = document.getElementById('etl-canvas');
+const ctx = canvas.getContext('2d');
+
+function resizeCanvas() {
+  const area = canvas.parentElement;
+  canvas.width = area.clientWidth;
+  canvas.height = area.clientHeight;
+  drawCanvas();
+}
+
+const NODE_DEFS = [
+  { id:'source',    label:'SOURCE',    icon:'⬡', desc:'File/DB Reader',   color:'#00e5ff' },
+  { id:'extract',   label:'EXTRACT',   icon:'◈', desc:'Schema Extraction', color:'#7c3aed' },
+  { id:'validate',  label:'VALIDATE',  icon:'◆', desc:'Rule Validation',   color:'#ffb300' },
+  { id:'transform', label:'TRANSFORM', icon:'⬡', desc:'Business Logic',    color:'#00ff88' },
+  { id:'enrich',    label:'ENRICH',    icon:'✦', desc:'Data Enrichment',   color:'#f472b6' },
+  { id:'load',      label:'LOAD',      icon:'⬡', desc:'Target Writer',     color:'#00e5ff' },
+];
+
+const EDGE_DEFS = [
+  { from:'source', to:'extract' },
+  { from:'extract', to:'validate' },
+  { from:'extract', to:'transform' },
+  { from:'validate', to:'enrich' },
+  { from:'transform', to:'enrich' },
+  { from:'enrich', to:'load' },
+];
+
+let nodePositions = {};
+let activeNodeId = null;
+let particlesArr = [];
+let particleTick = 0;
+
+function calcNodePositions() {
+  const w = canvas.width, h = canvas.height;
+  const nodes = NODE_DEFS;
+  // Layout: source → extract → (validate, transform) → enrich → load
+  const layout = [
+    { id:'source',    rx:0.08, ry:0.5  },
+    { id:'extract',   rx:0.25, ry:0.5  },
+    { id:'validate',  rx:0.45, ry:0.28 },
+    { id:'transform', rx:0.45, ry:0.72 },
+    { id:'enrich',    rx:0.65, ry:0.5  },
+    { id:'load',      rx:0.84, ry:0.5  },
+  ];
+  layout.forEach(l => {
+    nodePositions[l.id] = { x: w * l.rx, y: h * l.ry, r: 38 };
+  });
+}
+
+function drawCanvas() {
+  if(!canvas.width) return;
+  calcNodePositions();
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  // Draw grid dots
+  ctx.fillStyle = 'rgba(13,32,53,0.4)';
+  for(let x=0;x<canvas.width;x+=30){
+    for(let y=0;y<canvas.height;y+=30){
+      ctx.beginPath();ctx.arc(x,y,0.8,0,Math.PI*2);ctx.fill();
+    }
+  }
+
+  // Draw edges
+  EDGE_DEFS.forEach(e => {
+    const a = nodePositions[e.from], b = nodePositions[e.to];
+    if(!a||!b) return;
+    const fromStage = pipelineStages.find(s=>s.id===e.from);
+    const toStage = pipelineStages.find(s=>s.id===e.to);
+    const active = fromStage?.status==='running'||fromStage?.status==='done';
+    const color = active ? '#00e5ff' : '#0d2035';
+
+    // Bezier curve
+    const mx = (a.x+b.x)/2;
+    ctx.beginPath();
+    ctx.moveTo(a.x+a.r, a.y);
+    ctx.bezierCurveTo(mx,a.y, mx,b.y, b.x-b.r, b.y);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = active ? 2 : 1;
+    if(active){
+      ctx.setLineDash([8,6]);
+      ctx.lineDashOffset = -particleTick*0.5;
+    } else {
+      ctx.setLineDash([]);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Arrow
+    if(active){
+      const tx=b.x-b.r, ty=b.y;
+      ctx.beginPath();
+      ctx.moveTo(tx-8, ty-5);ctx.lineTo(tx, ty);ctx.lineTo(tx-8, ty+5);
+      ctx.strokeStyle=color;ctx.lineWidth=2;ctx.stroke();
+    }
+
+    // Animated data packets
+    if(active && isRunning){
+      for(let i=0;i<3;i++){
+        const t = ((particleTick*0.008)+(i*0.33))%1;
+        const mt = 1-t;
+        // Cubic bezier point
+        const px = mt*mt*mt*(a.x+a.r) + 3*mt*mt*t*mx + 3*mt*t*t*mx + t*t*t*(b.x-b.r);
+        const py = mt*mt*mt*a.y + 3*mt*mt*t*a.y + 3*mt*t*t*b.y + t*t*t*b.y;
+        ctx.beginPath();
+        ctx.arc(px,py,3,0,Math.PI*2);
+        ctx.fillStyle=color;
+        ctx.globalAlpha=0.8*(1-Math.abs(t-0.5)*2+0.2);
+        ctx.fill();
+        ctx.globalAlpha=1;
+      }
+    }
+  });
+
+  // Draw nodes
+  NODE_DEFS.forEach(n => {
+    const pos = nodePositions[n.id];
+    if(!pos) return;
+    const stage = pipelineStages.find(s=>s.id===n.id);
+    const status = stage?.status||'idle';
+    const isActive = status==='running';
+    const isDone = status==='done';
+    const color = n.color;
+    const r = pos.r;
+
+    // Outer glow
+    if(isActive||isDone){
+      const grad = ctx.createRadialGradient(pos.x,pos.y,r*0.5,pos.x,pos.y,r*2);
+      grad.addColorStop(0, `${color}22`);
+      grad.addColorStop(1,'transparent');
+      ctx.beginPath();ctx.arc(pos.x,pos.y,r*2,0,Math.PI*2);
+      ctx.fillStyle=grad;ctx.fill();
+    }
+
+    // Hexagon
+    ctx.beginPath();
+    for(let i=0;i<6;i++){
+      const angle=Math.PI/3*i - Math.PI/6;
+      const px=pos.x+r*Math.cos(angle), py=pos.y+r*Math.sin(angle);
+      i===0?ctx.moveTo(px,py):ctx.lineTo(px,py);
+    }
+    ctx.closePath();
+    // Fill
+    const bg = isActive ? `${color}18` : isDone ? `${color}10` : 'rgba(6,12,20,0.9)';
+    ctx.fillStyle=bg;ctx.fill();
+    // Stroke
+    ctx.strokeStyle = isActive ? color : isDone ? `${color}80` : '#0d2035';
+    ctx.lineWidth = isActive ? 2 : 1;
+    ctx.stroke();
+
+    // Progress ring for active
+    if(isActive && stage?.progress!==undefined){
+      const p = stage.progress/100;
+      ctx.beginPath();
+      ctx.arc(pos.x,pos.y,r+4,-Math.PI/2,-Math.PI/2+Math.PI*2*p);
+      ctx.strokeStyle=color;ctx.lineWidth=2;ctx.stroke();
+    }
+
+    // Icon
+    ctx.font=`${r*0.55}px Rajdhani`;
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillStyle=isActive?color:isDone?`${color}bb`:'#1a3045';
+    ctx.fillText(n.icon,pos.x,pos.y-6);
+
+    // Label
+    ctx.font=`700 10px Orbitron`;
+    ctx.fillStyle=isActive?color:isDone?`${color}aa`:'#3a6080';
+    ctx.fillText(n.label,pos.x,pos.y+12);
+
+    // Status badge
+    if(isActive){
+      ctx.font='9px Share Tech Mono';
+      ctx.fillStyle='#ffb300';
+      ctx.fillText('●  RUNNING',pos.x,pos.y+26);
+    } else if(isDone){
+      ctx.font='9px Share Tech Mono';
+      ctx.fillStyle='#00ff88';
+      ctx.fillText('✓ DONE',pos.x,pos.y+26);
+    } else if(pipelineStages.length>0){
+      ctx.font='9px Share Tech Mono';
+      ctx.fillStyle='#3a6080';
+      ctx.fillText('QUEUED',pos.x,pos.y+26);
+    }
+
+    // Record count
+    if(stage?.records){
+      ctx.font='9px Share Tech Mono';
+      ctx.fillStyle='rgba(0,229,255,0.6)';
+      ctx.fillText(`${fmtNum(stage.records)} rec`,pos.x,pos.y-r-8);
+    }
+  });
+
+  // Draw title
+  ctx.font='700 11px Orbitron';
+  ctx.fillStyle='rgba(0,229,255,0.2)';
+  ctx.textAlign='left';
+  ctx.fillText('PIPELINE FLOW GRAPH — Ab Initio™ style', 12, 16);
+  if(pipelineStages.length===0){
+    ctx.font='13px Rajdhani';
+    ctx.fillStyle='rgba(58,96,128,0.6)';
+    ctx.textAlign='center';
+    ctx.fillText('Generate a pipeline to visualize the flow', canvas.width/2, canvas.height/2);
+  }
+
+  particleTick++;
+  animFrame = requestAnimationFrame(drawCanvas);
+}
+
+// ========================
+// PIPELINE GENERATION (Groq LLaMA)
+// ========================
+async function generatePipeline() {
+  const key = document.getElementById('groq-key').value.trim();
+  const model = document.getElementById('model-select').value;
+  const prompt = document.getElementById('main-prompt').value.trim();
+  const source = selectedPath;
+  const targetType = document.getElementById('target-type').value;
+  const targetPath = document.getElementById('target-path').value.trim()||'output_table';
+
+  if(!key){addLog('err','GROQ API key required');alert('Please enter your Groq API key');return;}
+  if(!prompt){addLog('warn','No business prompt provided');return;}
+
+  const btn = document.getElementById('generate-btn');
+  btn.disabled=true;btn.textContent='GENERATING…';
+  setRunStatus('Calling Groq LLaMA…','var(--amber)');
+  addLog('info',`Generating pipeline with ${model}`);
+  addLog('info',`Source: ${source} | Target: ${targetPath}`);
+
+  const systemPrompt = `You are an expert ETL pipeline architect. Given a business requirement, generate a complete ETL pipeline specification in JSON.
+
+Return ONLY valid JSON with this exact structure:
+{
+  "pipeline_name": "string",
+  "description": "string",
+  "stages": [
+    {
+      "id": "source|extract|validate|transform|enrich|load",
+      "label": "string",
+      "operations": ["string"],
+      "config": {},
+      "estimated_records": number,
+      "parallelism": number
+    }
+  ],
+  "schema": [
+    {"field": "string", "type": "string", "nullable": boolean, "description": "string"}
+  ],
+  "jira_tickets": [
+    {
+      "id": "ETL-XXX",
+      "title": "string",
+      "type": "Epic|Story|Task|Bug",
+      "description": "string",
+      "story_points": number,
+      "status": "To Do|In Progress|Done",
+      "priority": "High|Medium|Low",
+      "labels": ["string"]
+    }
+  ],
+  "python_code": "string (complete executable Python/PySpark ETL code using pandas/polars/pyspark)",
+  "performance_notes": "string",
+  "schedule_cron": "string"
+}
+
+Use all 6 stages: source, extract, validate, transform, enrich, load.
+Generate realistic operations, 8-12 Jira tickets, complete runnable Python code using pandas+polars for speed, and a realistic schema with 8-15 fields.
+Python code should use async batching, vectorized ops, and be production-grade.`;
+
+  const userMsg = `Business Requirement: ${prompt}
+
+Source Path: ${source}
+Target Type: ${targetType}
+Target: ${targetPath}
+Schedule: ${document.getElementById('cron-expr').value}
+
+Generate a complete ETL pipeline specification.`;
+
+  try {
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions',{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'Authorization':`Bearer ${key}`
+      },
+      body: JSON.stringify({
+        model,
+        messages:[
+          {role:'system',content:systemPrompt},
+          {role:'user',content:userMsg}
+        ],
+        temperature:0.3,
+        max_tokens:4096
+      })
+    });
+
+    if(!res.ok){
+      const err = await res.json();
+      throw new Error(err.error?.message||`HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    let raw = data.choices[0].message.content;
+    // Strip markdown fences
+    raw = raw.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim();
+    const pipeline = JSON.parse(raw);
+
+    applyPipeline(pipeline);
+    document.getElementById('model-badge').textContent=`⚡ GROQ / ${model.toUpperCase().slice(0,18)}`;
+    addLog('ok',`Pipeline "${pipeline.pipeline_name}" generated successfully`);
+    addLog('ok',`${pipeline.stages?.length} stages | ${pipeline.jira_tickets?.length} Jira tickets | ${pipeline.schema?.length} schema fields`);
+    setRunStatus(`Pipeline ready: ${pipeline.pipeline_name}`,'var(--green)');
+    document.getElementById('run-btn').disabled=false;
+
+  } catch(err){
+    addLog('err',`Generation failed: ${err.message}`);
+    setRunStatus('Generation failed','var(--red)');
+    alert('Error: '+err.message);
+  }
+
+  btn.disabled=false;btn.textContent='GENERATE ▶';
+}
+
+function applyPipeline(pl) {
+  // Reset
+  stopPipeline();
+  totalProcessed=0;errors=0;recordsPerSec=0;
+  updateStats();
+
+  // Stages
+  pipelineStages = (pl.stages||NODE_DEFS.map(n=>({id:n.id,label:n.label}))).map(s=>({
+    ...s, status:'idle', progress:0, records:0
+  }));
+  renderStageList();
+
+  // Jira
+  generatedJira = pl.jira_tickets||[];
+  renderJira();
+
+  // Schema
+  generatedSchema = pl.schema||[];
+  renderSchema();
+
+  // Code
+  generatedCode = pl.python_code||'# No code generated';
+
+  // Cron
+  if(pl.schedule_cron) document.getElementById('cron-expr').value=pl.schedule_cron;
+  updateNextRun();
+
+  addLog('info',`Performance notes: ${pl.performance_notes||'N/A'}`);
+}
+
+// ========================
+// PIPELINE EXECUTION SIMULATOR
+// ========================
+async function runPipeline() {
+  if(isRunning || pipelineStages.length===0) return;
+  isRunning=true;
+  document.getElementById('run-btn').disabled=true;
+  document.getElementById('stop-btn').disabled=false;
+  elapsed=0;
+  totalProcessed=0;errors=0;
+  elapsedInterval=setInterval(()=>{elapsed+=0.1;document.getElementById('stat-time').textContent=elapsed.toFixed(1)+'s';},100);
+
+  addLog('ok','Pipeline execution started');
+  setRunStatus('RUNNING…','var(--green)');
+
+  for(let i=0;i<pipelineStages.length;i++){
+    if(!isRunning) break;
+    const stage = pipelineStages[i];
+    stage.status='running';
+    stage.progress=0;
+    document.getElementById('stat-stage').textContent=stage.label||stage.id;
+    addLog('info',`Stage [${stage.label||stage.id}] started`);
+
+    // Simulate progress
+    const duration = 800+Math.random()*1200;
+    const records = (stage.estimated_records||Math.floor(Math.random()*50000+10000));
+    const steps=20;
+    for(let step=0;step<steps;step++){
+      if(!isRunning) break;
+      await sleep(duration/steps);
+      stage.progress=Math.round((step+1)/steps*100);
+      stage.records=Math.round(records*(step+1)/steps);
+      totalProcessed=pipelineStages.reduce((a,s)=>a+s.records,0);
+      recordsPerSec=Math.round(stage.records/(elapsed+0.1));
+      errors+=Math.random()>0.97?1:0;
+      updateStats();
+    }
+    stage.status='done';
+    addLog('ok',`Stage [${stage.label||stage.id}] completed — ${fmtNum(stage.records)} records`);
+    renderStageList();
+
+    // Update Jira
+    const jiraIdx = i;
+    if(generatedJira[jiraIdx]){
+      generatedJira[jiraIdx].status='Done';
+      renderJira();
+    }
+  }
+
+  isRunning=false;
+  clearInterval(elapsedInterval);
+  document.getElementById('run-btn').disabled=false;
+  document.getElementById('stop-btn').disabled=true;
+  document.getElementById('stat-stage').textContent='DONE';
+  setRunStatus('✓ Pipeline completed successfully','var(--green)');
+  addLog('ok',`Execution complete. Total: ${fmtNum(totalProcessed)} records | ${elapsed.toFixed(1)}s | ${errors} errors`);
+}
+
+function stopPipeline(){
+  isRunning=false;
+  clearInterval(elapsedInterval);
+  pipelineStages.forEach(s=>{if(s.status==='running')s.status='idle';});
+  renderStageList();
+  document.getElementById('run-btn').disabled=pipelineStages.length===0;
+  document.getElementById('stop-btn').disabled=true;
+  setRunStatus('Stopped','var(--muted)');
+  addLog('warn','Pipeline stopped by user');
+}
+
+// ========================
+// RENDER HELPERS
+// ========================
+function renderStageList(){
+  const el = document.getElementById('stage-list');
+  if(!pipelineStages.length){el.innerHTML='<div style="color:var(--muted);font-size:10px;font-family:Share Tech Mono,monospace;text-align:center;padding:20px 0;">Generate pipeline first</div>';return;}
+  el.innerHTML = pipelineStages.map(s=>{
+    const ndef = NODE_DEFS.find(n=>n.id===s.id)||{color:'#00e5ff',icon:'⬡'};
+    const statusColor = s.status==='done'?'var(--green)':s.status==='running'?'var(--amber)':'var(--muted)';
+    return `<div class="stage-card ${s.status==='running'?'active':''} ${s.status==='done'?'done':''}">
+      <div class="stage-icon" style="background:${ndef.color}18;color:${ndef.color};">${ndef.icon}</div>
+      <div class="stage-info">
+        <div class="stage-name" style="color:${ndef.color};">${s.label||s.id}</div>
+        <div class="stage-desc">${(s.operations||['Processing'])[0]}</div>
+        <div class="progress-bar"><div class="progress-fill" style="width:${s.progress||0}%;"></div></div>
+      </div>
+      <div style="font-family:Share Tech Mono,monospace;font-size:9px;color:${statusColor};text-align:right;">
+        ${s.status==='running'?s.progress+'%':s.status.toUpperCase()}
+        ${s.records?'<br>'+fmtNum(s.records):''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderJira(){
+  const el = document.getElementById('jira-board');
+  if(!generatedJira.length){el.innerHTML='<div style="color:var(--muted);font-size:11px;font-family:Share Tech Mono,monospace;text-align:center;padding:30px 0;">Generate a pipeline to see Jira breakdown</div>';return;}
+  el.innerHTML = generatedJira.map(t=>{
+    const type=(t.type||'Task').toLowerCase();
+    const statusClass=t.status==='Done'?'done':t.status==='In Progress'?'progress':'todo';
+    return `<div class="jira-ticket ${type} ${t.status==='Done'?'done':''}" onclick="showTicket(${JSON.stringify(t).replace(/"/g,'&quot;')})">
+      <div class="ticket-id">${t.id} · ${t.priority||'Medium'} Priority</div>
+      <div class="ticket-title">${t.title}</div>
+      <div class="ticket-meta">
+        <span class="ticket-type ${type}">${t.type||'Task'}</span>
+        <span class="ticket-status ${statusClass}">${t.status||'To Do'}</span>
+        <span class="ticket-pts">${t.story_points||3}SP</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderSchema(){
+  const el = document.getElementById('schema-view');
+  if(!generatedSchema.length){el.innerHTML='<div style="color:var(--muted);font-size:11px;font-family:Share Tech Mono,monospace;text-align:center;padding:30px 0;">Schema will appear after generation</div>';return;}
+  el.innerHTML=`<table style="width:100%;border-collapse:collapse;font-family:Share Tech Mono,monospace;font-size:10px;">
+    <tr style="color:var(--muted);border-bottom:1px solid var(--border);">
+      <th style="padding:5px;text-align:left;">FIELD</th>
+      <th style="padding:5px;text-align:left;">TYPE</th>
+      <th style="padding:5px;text-align:center;">NULL</th>
+    </tr>
+    ${generatedSchema.map(f=>`<tr style="border-bottom:1px solid rgba(13,32,53,0.5);">
+      <td style="padding:5px;color:var(--cyan);">${f.field}</td>
+      <td style="padding:5px;color:var(--green);">${f.type}</td>
+      <td style="padding:5px;text-align:center;color:${f.nullable?'var(--amber)':'var(--muted)'};">${f.nullable?'Y':'N'}</td>
+    </tr>`).join('')}
+  </table>`;
+}
+
+function showTicket(t){
+  document.getElementById('modal-title').textContent=`${t.id} — ${t.type}`;
+  document.getElementById('modal-body').innerHTML=`
+    <div style="margin-bottom:8px;font-size:15px;font-weight:600;color:var(--text);">${t.title}</div>
+    <div style="font-size:12px;color:var(--muted);font-family:Share Tech Mono,monospace;margin-bottom:12px;">${t.description||'No description'}</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;font-family:Share Tech Mono,monospace;font-size:10px;">
+      <span style="color:var(--amber);">Status: ${t.status}</span>
+      <span style="color:var(--purple);">Points: ${t.story_points}SP</span>
+      <span style="color:var(--cyan);">Priority: ${t.priority||'Medium'}</span>
+    </div>
+    ${t.labels?.length?`<div style="margin-top:10px;">${t.labels.map(l=>`<span class="chip">${l}</span>`).join('')}</div>`:''}`;
+  document.getElementById('modal').style.display='flex';
+}
+
+// ========================
+// LOGS
+// ========================
+function addLog(level, msg){
+  const el = document.getElementById('log-container');
+  const now = new Date();
+  const time = now.toTimeString().slice(0,8);
+  const entry = document.createElement('div');
+  entry.className='log-entry';
+  const lmap={info:'INFO',ok:' OK ',warn:'WARN',err:' ERR'};
+  entry.innerHTML=`<span class="log-time">${time}</span><span class="log-level ${level}">${lmap[level]||level}</span><span class="log-msg">${msg}</span>`;
+  el.prepend(entry);
+  if(el.children.length>200) el.removeChild(el.lastChild);
+}
+function clearLogs(){document.getElementById('log-container').innerHTML='';}
+
+// ========================
+// PATH MANAGEMENT
+// ========================
+function selectPath(el, path, name){
+  document.querySelectorAll('.path-item').forEach(p=>p.classList.remove('active'));
+  el.classList.add('active');
+  selectedPath=path;
+  addLog('info',`Source connector: ${path}`);
+}
+function addCustomPath(){
+  const inp=document.getElementById('custom-path');
+  const val=inp.value.trim();
+  if(!val)return;
+  const list=document.getElementById('path-list');
+  const icons={'s3':'☁','pg':'🗄','mysql':'🗄','http':'🌐','/':'📁'};
+  const icon=Object.entries(icons).find(([k])=>val.startsWith(k))?.[1]||'📁';
+  const div=document.createElement('div');
+  div.className='path-item';
+  div.onclick=function(){selectPath(this,val,'Custom')};
+  div.innerHTML=`<div class="path-icon">${icon}</div><div class="path-info"><div class="path-name">${val}</div><div class="path-meta">Custom connector</div></div><div class="path-status"></div>`;
+  list.appendChild(div);
+  inp.value='';
+  addLog('info',`Added connector: ${val}`);
+}
+
+// ========================
+// SCHEDULER
+// ========================
+function setSchedule(s){
+  currentSchedule=s;
+  document.querySelectorAll('.schedule-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById(`sched-${s}`).classList.add('active');
+  const cronMap={manual:'—',hourly:'0 * * * *',daily:'0 2 * * *',weekly:'0 2 * * 1'};
+  document.getElementById('cron-expr').value=cronMap[s]||'—';
+  updateNextRun();
+}
+function updateNextRun(){
+  const cron=document.getElementById('cron-expr').value;
+  if(cron==='—'||currentSchedule==='manual'){
+    document.getElementById('next-run').textContent='NEXT RUN: MANUAL';return;
+  }
+  const now=new Date();
+  const next=new Date(now.getTime()+3600000);
+  document.getElementById('next-run').textContent=`NEXT RUN: ${next.toLocaleString()}`;
+}
+
+// ========================
+// STATS
+// ========================
+function updateStats(){
+  document.getElementById('stat-records').textContent=fmtNum(recordsPerSec);
+  document.getElementById('stat-processed').textContent=fmtNum(totalProcessed);
+  document.getElementById('stat-errors').textContent=errors;
+}
+
+// ========================
+// TABS
+// ========================
+function switchTab(tab, el){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  el.classList.add('active');
+  ['jira','logs','schema'].forEach(t=>{
+    document.getElementById(`tab-${t}`).style.display=t===tab?'block':'none';
+  });
+}
+
+// ========================
+// EXPORT & MODAL
+// ========================
+function exportCode(){
+  if(!generatedCode){addLog('warn','No pipeline generated yet');return;}
+  document.getElementById('modal-title').textContent='EXPORT — PYTHON ETL CODE';
+  document.getElementById('modal-body').innerHTML=`<div class="code-block">${escHtml(generatedCode)}</div>`;
+  document.getElementById('modal').style.display='flex';
+}
+function showModal(type){
+  if(type==='jira'){
+    if(!generatedJira.length){addLog('warn','No Jira tickets yet');return;}
+    const csv=['ID,Title,Type,Status,Points,Priority',...generatedJira.map(t=>`${t.id},"${t.title}",${t.type},${t.status},${t.story_points},${t.priority||'Medium'}`)].join('\n');
+    document.getElementById('modal-title').textContent='JIRA EXPORT (CSV)';
+    document.getElementById('modal-body').innerHTML=`<div class="code-block">${escHtml(csv)}</div>`;
+    document.getElementById('modal').style.display='flex';
+  }
+}
+function closeModal(e){if(!e||e.target===document.getElementById('modal'))document.getElementById('modal').style.display='none';}
+function copyModalContent(){
+  const block=document.querySelector('#modal-body .code-block');
+  if(block){navigator.clipboard.writeText(block.textContent);addLog('ok','Copied to clipboard');}
+}
+
+// ========================
+// SAMPLE PROMPTS
+// ========================
+const SAMPLES=[
+  "Extract sales transactions from /data/sales/*.csv, join with customer master from PostgreSQL on customer_id, calculate LTV metrics (total_revenue, purchase_frequency, avg_order_value), filter customers with LTV > 100, and load to BigQuery analytics.customer_ltv table — schedule daily at 2AM",
+  "Read JSON clickstream events from s3://events/raw/*.json, filter event_type in ('purchase','add_to_cart'), sessionize by user_id with 30-minute gap, compute funnel conversion rates, deduplicate on event_id, load to Redshift fact_funnel partitioned by date",
+  "Connect to Oracle ERP, extract GL journal entries from last 30 days, normalize currencies to USD using ECB rates API, validate debit/credit balance, compute P&L by cost_center, load to Snowflake finance.gl_normalized with audit trail"
+];
+let sampleIdx=0;
+function loadSamplePrompt(){
+  document.getElementById('main-prompt').value=SAMPLES[sampleIdx%SAMPLES.length];
+  sampleIdx++;
+}
+function appendToPrompt(text){
+  const ta=document.getElementById('main-prompt');
+  ta.value+=(ta.value?', ':'')+text;
+  ta.focus();
+}
+
+// ========================
+// CLOCK
+// ========================
+function updateClock(){
+  document.getElementById('clock-display').textContent=new Date().toTimeString().slice(0,8);
+}
+setInterval(updateClock,1000);updateClock();
+
+// ========================
+// UTILS
+// ========================
+function fmtNum(n){if(n>=1e6)return(n/1e6).toFixed(1)+'M';if(n>=1000)return(n/1000).toFixed(1)+'K';return String(Math.round(n));}
+function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
+function escHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function setRunStatus(msg,color){
+  const el=document.getElementById('run-status');
+  el.textContent=msg;el.style.color=color||'var(--muted)';
+}
+
+// ========================
+// CANVAS TOOLTIP
+// ========================
+canvas.addEventListener('mousemove', e => {
+  const rect=canvas.getBoundingClientRect();
+  const mx=e.clientX-rect.left, my=e.clientY-rect.top;
+  const tooltip=document.getElementById('node-tooltip');
+  let found=false;
+  Object.entries(nodePositions).forEach(([id,pos])=>{
+    const dx=mx-pos.x,dy=my-pos.y;
+    if(Math.sqrt(dx*dx+dy*dy)<pos.r+5){
+      const stage=pipelineStages.find(s=>s.id===id);
+      const nd=NODE_DEFS.find(n=>n.id===id);
+      tooltip.style.display='block';
+      tooltip.style.left=(mx+10)+'px';tooltip.style.top=(my-10)+'px';
+      tooltip.innerHTML=`<div style="color:${nd?.color||'#00e5ff'};font-weight:700;margin-bottom:4px;">${nd?.label||id}</div>
+        <div style="color:var(--muted)">${nd?.desc||''}</div>
+        ${stage?.operations?`<div style="color:var(--text);margin-top:4px;">${stage.operations.slice(0,2).join('<br>')}</div>`:''}
+        ${stage?.records?`<div style="color:var(--green);margin-top:4px;">${fmtNum(stage.records)} records</div>`:''}
+        <div style="color:var(--amber);margin-top:2px;">Parallelism: ${stage?.parallelism||1}x</div>`;
+      found=true;
+    }
+  });
+  if(!found)tooltip.style.display='none';
+});
+canvas.addEventListener('mouseleave',()=>{document.getElementById('node-tooltip').style.display='none';});
+
+// ========================
+// INIT
+// ========================
+window.addEventListener('resize',resizeCanvas);
+resizeCanvas();
+renderStageList();
+renderJira();
+updateNextRun();
+addLog('info','NEXUS ETL Engine initialized');
+addLog('info','Enter Groq API key and business prompt to generate pipeline');
+addLog('info','Model: llama-3.3-70b-versatile (fastest for ETL generation)');
+</script>
+</body>
+</html>
